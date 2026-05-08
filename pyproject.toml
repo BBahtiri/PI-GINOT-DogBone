@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "pi-ginot-dogbone"
+version = "0.1.0"
+description = "Physics-Informed Geometry-Informed Neural Operator Transformer for parametric DogBone specimens"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Betim Bahtiri", email = "betimbahtiri@outlook.de"},
+]
+keywords = ["physics-informed", "neural-operator", "transformer", "finite-strain", "hyperelasticity"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "pillow>=9.0",
+    "imageio>=2.31",
+]
+
+[project.optional-dependencies]
+mp4 = ["imageio-ffmpeg>=0.4"]
+
+[project.urls]
+Repository = "https://github.com/BBahtiri/PI-GINOT-DogBone"
+
+[tool.setuptools.packages.find]
+include = ["models*", "geometry*", "physics*", "training*"]

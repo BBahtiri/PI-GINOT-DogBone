@@ -1,0 +1,26 @@
+# PI-GINOT Agentic Studio — External Deployment Dependencies
+# Does NOT include databricks-langchain (Databricks-only; guarded by try/except)
+# Install with: pip install -r requirements-external.txt
+
+# ── Streamlit UI ──
+streamlit>=1.38.0
+
+# ── LangChain / LangGraph (multi-agent framework) ──
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.3.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+langgraph-checkpoint>=2.0.0
+
+# ── Visualization ──
+plotly>=5.18.0
+pandas>=2.0.0
+
+# ── Data models ──
+pydantic>=2.0.0
+
+# ── Core ML (PI-GINOT inference) ──
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0

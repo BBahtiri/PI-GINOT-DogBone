@@ -1,0 +1,33 @@
+# PI-GINOT Agentic Studio — Databricks App Dependencies
+# Deployed via: databricks apps deploy
+
+# ── Streamlit UI ──
+streamlit>=1.38.0
+
+# ── LangChain / LangGraph (multi-agent framework) ──
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.3.0
+langchain-community>=0.3.0
+databricks-langchain>=0.1.0
+langgraph>=0.2.0
+langgraph-checkpoint>=2.0.0
+
+# ── Visualization ──
+plotly>=5.18.0
+pandas>=2.0.0
+
+# ── Data models ──
+pydantic>=2.0.0
+
+# ── Core ML (PI-GINOT inference) ──
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# ── Embeddings (semantic cache) ──
+# Uses OpenAI embeddings via langchain-openai (already listed above)
+# Or Databricks Foundation Model embeddings via databricks-langchain
+
+# ── Optional: local embeddings (no API cost, larger install) ──
+# sentence-transformers>=3.0.0

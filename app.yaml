@@ -1,0 +1,17 @@
+command:
+  - streamlit
+  - run
+  - llm_agents/Home.py
+  - --server.headless
+  - "true"
+  - --browser.gatherUsageStats
+  - "false"
+
+env:
+  - name: OPENAI_API_KEY
+    valueFrom: "openai-api-key"
+  - name: ANTHROPIC_API_KEY
+    valueFrom: "anthropic-api-key"
+  # Set this to your model serving endpoint name
+  - name: DATABRICKS_ENDPOINT_NAME
+    value: "databricks-claude-opus-4-7"

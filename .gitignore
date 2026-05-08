@@ -1,0 +1,36 @@
+
+# Generated showcase frames and media
+showcase_frames/
+showcase_frames_v2/
+*.gif
+*.mp4
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Private / not for public repo
+llm_agents/pages/3_Demo.py
+PROJECT_CODE.txt
+.env
+
+# Local app logs
+streamlit*.log

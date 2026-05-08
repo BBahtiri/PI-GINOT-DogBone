@@ -1,0 +1,29 @@
+# PI-GINOT Agentic Studio — Dependencies
+# Install with: pip install -r llm_agents/requirements.txt
+
+# ── LangChain / LangGraph ──
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.3.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+langgraph-checkpoint>=2.0.0
+
+# ── Streamlit UI ──
+streamlit>=1.38.0
+
+# ── Visualization ──
+plotly>=5.18.0
+pandas>=2.0.0
+
+# ── Data models ──
+pydantic>=2.0.0
+
+# ── Embeddings (for semantic cache — optional) ──
+# Uncomment ONE of these depending on your embedding provider:
+# sentence-transformers>=3.0.0    # local embeddings (no API cost)
+# langchain-openai                # already included above (text-embedding-3-small)
+
+# ── Core (likely already installed for PI-GINOT) ──
+numpy>=1.24.0
+torch>=2.0.0
