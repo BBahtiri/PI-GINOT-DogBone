@@ -258,3 +258,9 @@ PI-GINOT-DogBone-AgenticAI/
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+---
+
+## Author
+
+Betim Bahtiri and Aamir Dean
