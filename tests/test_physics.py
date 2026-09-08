@@ -491,3 +491,110 @@ def test_epoch_history_keys_match_the_epoch_summary():
 
     missing = sorted(k for k in read if k not in returned)
     assert not missing, f"fit() reads keys _train_one_epoch never returns: {missing}"
+
+
+# ----------------------------------------------------- verification level --
+
+def test_operators_are_exact():
+    """Level 0: the physics operators against closed-form fields.
+
+    Rigid motions give zero stress, P is frame-indifferent, an affine field
+    gives a constant and exactly correct stress, and on the real curved
+    geometry a uniaxial field satisfies every boundary condition except the
+    fillet arc -- which checks the normals, the tagging and the traction
+    index pairing at once.
+    """
+    from verification import operators as ops
+
+    for v in ops.check_zero_stress_states().values():
+        assert v < 1e-15
+    for v in ops.check_objectivity().values():
+        assert v < 1e-13
+    for k, v in ops.check_affine_patch_test(n=800).items():
+        assert v < 1e-13, k
+
+    bcs = ops.check_dogbone_boundary_conditions(n_per_segment=200)
+    for seg in ("bottom", "right_grip", "gauge_top", "left_symmetry"):
+        assert bcs[seg] < 1e-14, f"{seg} traction should vanish exactly"
+    # A uniform stretch is not the dog-bone solution, so the fillet must not
+    # be traction-free -- a zero here would mean the arc normals are dead.
+    assert bcs["right_arc"] > 1e-3
+
+    for k, v in ops.check_section_resultant(n_y=256).items():
+        if not k.startswith("_"):
+            assert v < 1e-13, k
+
+
+@pytest.mark.parametrize("state", ["plane strain", "plane stress"])
+def test_mms_divergence_matches_symbolic(state):
+    """Level 1: Div P through the full second-order AD chain, against sympy.
+
+    The reference is built from the closed-form Lambert-W solution of the
+    plane-stress closure, independently of this repository's Newton solve, so
+    a defect cannot cancel itself out.
+    """
+    from verification.mms import check_closure_identity, run_interior
+
+    assert check_closure_identity(n=50) < 1e-13
+    r = run_interior(state, n=400)
+    assert r["div_rms_reference"] > 1.0, "reference divergence must be non-trivial"
+    assert r["rel_L2"] < 1e-12
+    assert r["rel_Linf"] < 1e-11
+
+
+def test_mms_traction_matches_symbolic():
+    """Level 1: P.N on every segment against the symbolic P*.N."""
+    from verification.mms import run_boundary
+
+    for seg, err in run_boundary("plane stress", n_per_segment=120).items():
+        assert err < 1e-12, seg
+
+
+def test_boundary_geometry_is_exact():
+    """Level 0 (geometry): points, normals, outwardness and lengths.
+
+    Normals are the load-bearing part: every traction term is P.N, so a
+    flipped sign silently converts 'traction-free' into a constraint pulling
+    the field somewhere else, and the training curve looks fine throughout.
+    """
+    from verification.geometry_checks import GEOMETRY_TOL, check_one_geometry
+
+    cases = [
+        dict(GEOMETRY_DEFAULT),
+        dict(L_total=40.0, W_grip=26.0, W_gauge=6.0, R_fillet=20.0, holes=[]),
+        dict(L_total=70.0, W_grip=16.5, W_gauge=16.0, R_fillet=8.0, holes=[]),
+    ]
+    for params in cases:
+        r = check_one_geometry(params, n_per_segment=200)
+        for key in ("on_boundary", "unit_normals", "normal_direction",
+                    "length", "loop_gap"):
+            assert r[key] < GEOMETRY_TOL, (key, params)
+        assert r["outward_fail"] == 0, params
+        assert r["inward_fail"] == 0, params
+
+
+def test_measure_consistent_flag_fixes_the_boundary_split():
+    """The opt-in flag restores arc-length proportionality at equal budget.
+
+    Uniform-per-segment sampling leaves the encoder's point cloud up to 17x
+    denser on the short symmetry face than on the long bottom face, and
+    starves the collocation sampler's pool so it returns fewer points than
+    asked for. The flag shares the same total out by length instead.
+    """
+    from verification.geometry_checks import check_one_geometry
+
+    params = dict(L_total=40.0, W_grip=26.0, W_gauge=6.0, R_fillet=20.0,
+                  holes=[])
+    off = check_one_geometry(params, measure_consistent=False)
+    on = check_one_geometry(params, measure_consistent=True)
+
+    assert off["pc_density_ratio"] > 3.0
+    assert on["pc_density_ratio"] < 1.6
+    assert on["sampler_measure"] < 0.02
+    assert on["boundary_shortfall"] < 1e-9
+    # The total point budget must not change -- only its distribution.
+    from geometry.parametric_dogbone import generate_dogbone
+    tot = lambda mc: sum(len(s.points) for s in generate_dogbone(
+        params, n_pts_per_segment=400, rng=np.random.default_rng(0),
+        measure_consistent=mc).boundary_segments)
+    assert tot(False) == tot(True)

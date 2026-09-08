@@ -126,6 +126,17 @@ COLLOCATION_CONFIG = {
     "n_boundary_per_segment": 400,  # Boundary points per segment (5 segs * 400 = 2000 pool)
     "n_boundary_pc": 320,           # Boundary point cloud size for encoder
     "n_total_boundary": 1600,       # Total boundary points for physics loss
+
+    # Boundary points are placed uniformly per segment by default, so points
+    # per millimetre varies 5x (up to 9.5x over the geometry ranges) between
+    # the 5 mm symmetry face and the 27 mm bottom face.  That biases the
+    # encoder's view of the shape, and it starves the boundary collocation
+    # sampler's pool on the longest segment, which then cannot receive its
+    # arc-length share (1398 of 1600 points are returned at these settings).
+    # True shares the same total out by arc length instead.  Default False so
+    # existing checkpoints and results stay interpretable; flip it as an
+    # ablation.  See verification/geometry_checks.py.
+    "boundary_measure_consistent": False,
 }
 
 # Coordinate normalization
