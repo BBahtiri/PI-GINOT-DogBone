@@ -7,7 +7,11 @@ Assembles the complete loss from:
   1. Equilibrium residual:   Div(P) = 0       on interior
   2. Full traction-free BC:  P · N = 0        on arcs, gauge top, holes
   3. Partial traction BC:    (P·N)_i = 0      on grips, symmetry line
-  4. detF barrier:           ReLU(J_min - J)² to prevent inverted elements
+  4. J barrier:              ReLU(J_min - J)² to prevent inverted elements,
+                             applied to min(J2D, J3D).  Under plane stress
+                             F33 < 1 in tension, so J3D = J2D·F33 < J2D is
+                             the more critical quantity — guarding J2D alone
+                             watches the wrong determinant.
 
 Uses encode-once pattern: geometry latent is computed once and reused
 for all query point sets per geometry.
@@ -23,6 +27,7 @@ Nondimensionalization:
 import torch
 import torch.nn as nn
 
+from .neo_hookean import require_stress_state
 from .equilibrium import (
     equilibrium_residual,
     traction_residual_full,
@@ -62,13 +67,13 @@ class PhysicsLoss(nn.Module):
         adaptive_beta: float = 0.1,
         L0: float = 50.0,
         S0: float = 760.0,
-        stress_state: str = "plane strain",
+        stress_state: str = None,
     ):
         super().__init__()
         self.mu = mu
         self.lam = lam
         self.j_min = j_min
-        self.stress_state = stress_state
+        self.stress_state = require_stress_state(stress_state)
 
         # Nondimensionalization scales
         self.L0 = L0
@@ -118,20 +123,21 @@ class PhysicsLoss(nn.Module):
         trac_scale = 1.0 / self.S0        # Scale for P·N:    [MPa]   → O(1)
 
         # 1. Equilibrium: Div(P) = 0
-        f_x, f_y, detF_int = equilibrium_residual(
+        f_x, f_y, detF_int, J3D_int = equilibrium_residual(
             model, interior_pts, geometry_latent, u_delta, x_max,
-            self.mu, self.lam, y_max, self.stress_state,
+            self.mu, self.lam, y_max, self.stress_state, return_J3D=True,
         )
         L_eq = torch.mean((eq_scale * f_x)**2 + (eq_scale * f_y)**2)
 
         # 2. Full traction-free BC: P · N = 0 (split by segment)
         detF_bnd = None
+        J3D_bnd = None
         _zero = torch.tensor(0.0, device=interior_pts.device)
         if trac_free_pts.shape[1] > 0:
-            trac_x, trac_y, detF_bnd = traction_residual_full(
+            trac_x, trac_y, detF_bnd, J3D_bnd = traction_residual_full(
                 model, trac_free_pts, trac_free_normals,
                 geometry_latent, u_delta, x_max, self.mu, self.lam,
-                y_max, self.stress_state,
+                y_max, self.stress_state, return_J3D=True,
             )
             residual = (trac_scale * trac_x)**2 + (trac_scale * trac_y)**2
             # [B, N, 1] — squeeze last dim for masking
@@ -162,12 +168,18 @@ class PhysicsLoss(nn.Module):
         else:
             L_part = torch.tensor(0.0, device=interior_pts.device)
 
-        # 4. detF barrier on interior + traction-free boundary
+        # 4. J barrier on interior + traction-free boundary.
+        #    Guard min(J2D, J3D): under plane stress F33 < 1 in tension, so
+        #    the 3D determinant reaches the barrier first.
         detF_all = [detF_int]
+        J3D_all = [J3D_int]
         if detF_bnd is not None:
             detF_all.append(detF_bnd)
+            J3D_all.append(J3D_bnd)
         detF_cat = torch.cat(detF_all, dim=1)
-        L_barrier = torch.mean(torch.relu(self.j_min - detF_cat) ** 2)
+        J3D_cat = torch.cat(J3D_all, dim=1)
+        J_guard = torch.minimum(detF_cat, J3D_cat)
+        L_barrier = torch.mean(torch.relu(self.j_min - J_guard) ** 2)
 
         # Weighted total (arcs weighted higher than flat top)
         loss = (self.w_eq * L_eq
@@ -193,6 +205,8 @@ class PhysicsLoss(nn.Module):
             "L_trac_hole_log": L_trac_hole.item(),
             "L_part_log": L_part.item(),
             "L_barrier_log": L_barrier.item(),
+            "min_J2D_log": detF_cat.detach().min().item(),
+            "min_J3D_log": J3D_cat.detach().min().item(),
             "w_eq": self.w_eq.item(),
             "w_trac_top": self.w_trac_top.item(),
             "w_trac_arc": self.w_trac_arc.item(),
