@@ -401,3 +401,69 @@ def test_val_bank_matches_the_trainer_builder():
     ranges = TRAINING_CONFIG["bank_geo_ranges"]
     bank = build_geometry_bank(n, ranges, holes_on=False, seed=VAL_BANK_SEED)
     assert [m.params for m, _ in bank] == val_bank_params(n, ranges)
+
+
+# --------------------------------------------------------------- manifest --
+
+def test_manifest_hash_ignores_cosmetic_keys():
+    """Two runs differing only in print frequency share a config hash."""
+    import config as config_module
+    from training.manifest import collect_config, config_hash
+
+    base = collect_config(config_module)
+    tweaked = {**base,
+               "TRAINING_CONFIG": {**base["TRAINING_CONFIG"],
+                                   "print_every": 999, "plot_every": 7}}
+    assert config_hash(tweaked) == config_hash(base)
+
+    science = {**base,
+               "TRAINING_CONFIG": {**base["TRAINING_CONFIG"],
+                                   "w_equilibrium": 1.0}}
+    assert config_hash(science) != config_hash(base)
+
+
+def test_manifest_is_written_and_complete(tmp_path):
+    """write_manifest records git state, environment and the config."""
+    import json
+
+    import config as config_module
+    from training.manifest import MANIFEST_NAME, write_manifest
+
+    m = write_manifest(str(tmp_path), config_module, extra={"device": "cpu"})
+    on_disk = json.loads((tmp_path / MANIFEST_NAME).read_text())
+    assert on_disk["config_sha256"] == m["config_sha256"]
+    assert on_disk["environment"]["torch"]
+    assert on_disk["environment"]["numpy"]
+    assert "MATERIAL_CONFIG" in on_disk["config"]
+    assert set(on_disk["git"]) >= {"commit", "branch", "dirty"}
+    assert on_disk["extra"]["device"] == "cpu"
+
+
+def test_set_deterministic_leaves_the_model_usable():
+    """Deterministic kernels must not break the encoder's scatter ops.
+
+    pointnet2_utils has gather/scatter kernels without deterministic
+    implementations; warn_only=True is what keeps them usable, and this test
+    is the guard that the flag is doing its job.
+    """
+    import warnings
+
+    from training.manifest import set_deterministic
+
+    try:
+        set_deterministic(0, warn_only=True)
+        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).eval()
+        mesh = generate_dogbone(GEOMETRY_DEFAULT, rng=np.random.default_rng(0))
+        coll = sample_collocation_points(mesh, n_interior=16,
+                                         n_total_boundary=16,
+                                         rng=np.random.default_rng(0))
+        bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32).unsqueeze(0)
+        x_m = torch.tensor([coll.x_max])
+        y_m = torch.tensor([coll.y_max])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with torch.no_grad():
+                z = model.encode(bpc, x_m, y_m, sample_ids=torch.tensor([0]))
+        assert torch.isfinite(z).all()
+    finally:
+        torch.use_deterministic_algorithms(False)

@@ -49,6 +49,7 @@ from physics.uniaxial import (
     section_resultant_small_strain,
 )
 from .curriculum import CurriculumScheduler
+from .manifest import write_manifest
 
 
 class PI_GINOT_Trainer:
@@ -122,6 +123,20 @@ class PI_GINOT_Trainer:
 
         # Closed-form resultant anchors, cached per (geometry, u_delta, mode)
         self._anchor_cache = {}
+
+        # Run manifest: git state, library and GPU versions, and a hash over
+        # the scientific config.  Written once per run and stamped into every
+        # checkpoint, so a checkpoint can always be traced to what made it.
+        import config as _config_module
+        self.manifest = write_manifest(
+            save_dir, _config_module,
+            extra={"device": str(self.device),
+                   "effective_training_config": self.config},
+        )
+        self.config_sha256 = self.manifest["config_sha256"]
+        print(f"  Run manifest: {os.path.join(save_dir, 'run_manifest.json')} "
+              f"(config {self.config_sha256[:12]}, "
+              f"git {self.manifest['git']['describe']})")
 
         # Fixed validation geometry set (built lazily)
         self._val_set = None
@@ -1464,6 +1479,9 @@ class PI_GINOT_Trainer:
             "best_val_raw": self.best_val_raw,
             "best_gated_val_raw": self.best_gated_val_raw,
             "loss_fn_state_dict": self.loss_fn.state_dict(),
+            "config_sha256": self.config_sha256,
+            "git_commit": self.manifest["git"]["commit"],
+            "git_dirty": self.manifest["git"]["dirty"],
         }
         path = os.path.join(self.save_dir, "last.pt")
         torch.save(state, path)
@@ -1486,6 +1504,14 @@ class PI_GINOT_Trainer:
         self.best_val_raw = ckpt.get("best_val_raw", self.best_loss)
         self.best_gated_val_raw = ckpt.get("best_gated_val_raw", self.best_loss)
         self.start_epoch = ckpt["epoch"] + 1
+        ckpt_hash = ckpt.get("config_sha256")
+        if ckpt_hash is None:
+            print("  Warning: checkpoint predates run manifests — the config "
+                  "that produced it is unrecorded.")
+        elif ckpt_hash != self.config_sha256:
+            print(f"  Warning: config hash mismatch. Checkpoint "
+                  f"{ckpt_hash[:12]}, current {self.config_sha256[:12]} — "
+                  "this run does not continue the same experiment.")
         print(f"Resumed from epoch {self.start_epoch}, "
               f"best_loss={self.best_loss:.4e}")
 

@@ -21,6 +21,7 @@ from config import (
 )
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
+from training.manifest import set_deterministic
 from training.trainer import PI_GINOT_Trainer
 
 
@@ -140,8 +141,10 @@ def main():
     args, _ = parser.parse_known_args()
 
     # Seed
-    np.random.seed(RANDOM_SEED)
-    torch.manual_seed(RANDOM_SEED)
+    # Seeds every RNG in play, pins cudnn, and asks torch for deterministic
+    # kernels.  Must run before any tensor touches the GPU, because
+    # CUBLAS_WORKSPACE_CONFIG is only read when the CUDA context is created.
+    set_deterministic(RANDOM_SEED)
 
     # Device
     if args.device:
