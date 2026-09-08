@@ -42,6 +42,10 @@ from geometry.collocation import sample_collocation_points
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
 from physics.neo_hookean import full_stress_state, first_piola_kirchhoff_stress
+from physics.uniaxial import (
+    section_resultant_series, section_resultant_uniform,
+    section_resultant_small_strain,
+)
 from .curriculum import CurriculumScheduler
 
 
@@ -113,6 +117,9 @@ class PI_GINOT_Trainer:
         # EMA-smoothed loss for LR scheduler
         self._ema_loss = None
         self._ema_alpha = self.config.get("ema_alpha", 0.1)
+
+        # Closed-form resultant anchors, cached per (geometry, u_delta, mode)
+        self._anchor_cache = {}
 
         # Fixed validation geometry set (built lazily)
         self._val_set = None
@@ -1033,17 +1040,106 @@ class PI_GINOT_Trainer:
         L_var = ((N_stack - N_mean) / den).pow(2).mean()
         L_adj = ((N_stack[1:] - N_stack[:-1]) / den).pow(2).mean()
 
-        # Absolute force anchor (prevents magnitude collapse)
-        # Small-strain 1D estimate: N_target = E · (u_δ/L) · (2·H_gauge)
-        # This is approximate but keeps the force magnitude honest.
-        E_mod = MATERIAL_CONFIG["E"]
-        H_gauge = fi["H_gauge"]
-        u_delta_val = u_delta.item() if isinstance(u_delta, torch.Tensor) else float(u_delta)
-        N_target = E_mod * (u_delta_val / L_half) * (2.0 * H_gauge)
-        L_anchor = ((N_mean - N_target) / N_target).pow(2)
+        L_resultant = L_var + 2.0 * L_adj
 
-        L_resultant = L_var + 2.0 * L_adj + 0.5 * L_anchor
+        u_delta_val = (u_delta.item() if isinstance(u_delta, torch.Tensor)
+                       else float(u_delta))
+
+        # (a) Reaction-force self-consistency.  The mean sectional resultant
+        #     must equal the resultant integrated on the loaded grip face
+        #     (x = L_half) from the *same* predicted P field.  No analytic
+        #     target is involved, and it regularises exactly the quantity the
+        #     paper reports.
+        w_reaction = self.config.get("w_resultant_reaction", 1.0)
+        if w_reaction > 0.0 and not holes:
+            R_grip = self._grip_reaction(
+                model, geometry_latent, mesh, u_delta, x_max, y_max,
+                n_y_pts=max(n_y_pts, 64),
+            )
+            L_reaction = ((N_mean - R_grip) / den).pow(2)
+            L_resultant = L_resultant + w_reaction * L_reaction
+
+        # (b) Absolute anchor against a closed-form reference (prevents
+        #     magnitude collapse).  See physics/uniaxial.py: the legacy
+        #     small-strain form undershoots by 5-30% because it ignores the
+        #     varying section, so 'series' is the default.
+        anchor_mode = self.config.get("resultant_anchor", "series")
+        w_anchor = self.config.get("w_resultant_anchor", 0.5)
+        if anchor_mode != "none" and w_anchor > 0.0:
+            N_target = self._resultant_anchor_target(
+                mesh, u_delta_val, anchor_mode
+            )
+            L_anchor = ((N_mean - N_target) / N_target).pow(2)
+            L_resultant = L_resultant + w_anchor * L_anchor
+
         return L_resultant
+
+    def _resultant_anchor_target(self, mesh, u_delta: float,
+                                 mode: str = "series") -> float:
+        """Closed-form target for the axial resultant, cached per geometry.
+
+        Modes:
+            'series'       — 1D varying-section finite-strain solve (default;
+                             the only one that accounts for the stiff grip).
+            'uniform'      — finite-strain uniform bar at the average stretch.
+            'small_strain' — legacy E*(u/L)*2H; kept for the ablation.
+        """
+        fi = mesh.fillet_info
+        key = (round(fi["L_half"], 9), round(fi["H_grip"], 9),
+               round(fi["H_gauge"], 9), round(fi["R_fillet"], 9),
+               round(u_delta, 9), mode)
+        cached = self._anchor_cache.get(key)
+        if cached is not None:
+            return cached
+
+        mu = MATERIAL_CONFIG["mu"]
+        lam = MATERIAL_CONFIG["lam"]
+        if mode == "series":
+            val = section_resultant_series(fi, u_delta, mu, lam)
+        elif mode == "uniform":
+            val = section_resultant_uniform(fi, u_delta, mu, lam)
+        elif mode == "small_strain":
+            val = section_resultant_small_strain(fi, u_delta,
+                                                 MATERIAL_CONFIG["E"])
+        else:
+            raise ValueError(
+                f"Unknown resultant_anchor {mode!r}; expected 'series', "
+                "'uniform', 'small_strain' or 'none'."
+            )
+        self._anchor_cache[key] = val
+        return val
+
+    def _grip_reaction(self, model, geometry_latent, mesh, u_delta,
+                       x_max, y_max, n_y_pts: int = 128):
+        """Axial reaction 2*int P11 dy on the loaded grip face x = L_half.
+
+        This is the force the specimen actually transmits to the grip under
+        the predicted field — the internal consistency partner of the section
+        resultants, with no analytic estimate involved.
+        """
+        fi = mesh.fillet_info
+        L_half = fi["L_half"]
+        H_grip = fi["H_grip"]
+        mu = MATERIAL_CONFIG["mu"]
+        lam = MATERIAL_CONFIG["lam"]
+        state = MATERIAL_CONFIG["state"]
+
+        y_edges = np.linspace(0.0, H_grip, n_y_pts + 1)
+        y_mid = 0.5 * (y_edges[:-1] + y_edges[1:])
+        dy = H_grip / n_y_pts
+
+        pts = np.stack([np.full(n_y_pts, L_half), y_mid], axis=-1)
+        query = torch.tensor(pts, dtype=torch.float32,
+                             device=self.device).unsqueeze(0)
+        query.requires_grad_(True)
+
+        _, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
+            query, geometry_latent, u_delta, x_max, y_max
+        )
+        P11, _, _, _, _ = first_piola_kirchhoff_stress(
+            du_dx, du_dy, dv_dx, dv_dy, mu, lam, state
+        )
+        return 2.0 * dy * P11[0, :, 0].sum()
 
     # Section-force diagnostic (no grad)
     @torch.no_grad()

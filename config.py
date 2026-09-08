@@ -168,6 +168,19 @@ TRAINING_CONFIG = {
     "n_resultant_slices": 16,       # Number of vertical slices for resultant
     "n_resultant_y_pts": 128,       # Points per slice for integration
 
+    # Section-resultant anchoring (see physics/uniaxial.py).
+    #   'series'       — 1D varying-section finite-strain solve  [default]
+    #   'uniform'      — finite-strain uniform bar at average stretch
+    #   'small_strain' — legacy E*(u/L)*2H, biased low by 5-30%  [ablation]
+    #   'none'         — rely on reaction self-consistency alone
+    "resultant_anchor": "series",
+    "w_resultant_anchor": 0.5,      # Weight of the absolute anchor term
+    "w_resultant_reaction": 0.5,    # Weight of the grip reaction-consistency term
+                                    # (0.5 keeps the total anchoring magnitude
+                                    #  comparable to the old single 0.5*L_anchor,
+                                    #  so the bias fix is not confounded by a
+                                    #  change in how hard the term pulls)
+
     # Barrier warmup (exponentially ramp down barrier after early locking)
     "barrier_warmup_epochs": 300,
     "barrier_final_weight": 1.0,
