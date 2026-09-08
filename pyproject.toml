@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "torch>=2.0",
     "numpy>=1.24",
+    "scipy>=1.10",
     "matplotlib>=3.7",
     "pillow>=9.0",
     "imageio>=2.31",
@@ -31,9 +32,15 @@ dependencies = [
 
 [project.optional-dependencies]
 mp4 = ["imageio-ffmpeg>=0.4"]
+test = ["pytest>=7.0", "scipy>=1.10"]
 
 [project.urls]
 Repository = "https://github.com/BBahtiri/PI-GINOT-DogBone"
 
 [tool.setuptools.packages.find]
-include = ["models*", "geometry*", "physics*", "training*"]
+include = ["models*", "geometry*", "physics*", "training*", "eval*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::RuntimeWarning"]
