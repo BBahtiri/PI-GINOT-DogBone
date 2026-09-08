@@ -100,7 +100,7 @@ def evaluate_geometry(model, params, device, rng):
     """Generate mesh, run encode/decode, compute stress/strain, return fields."""
     mu  = MATERIAL_CONFIG["mu"]
     lam = MATERIAL_CONFIG["lam"]
-    state = MATERIAL_CONFIG.get("state", "plane strain")
+    state = MATERIAL_CONFIG["state"]
     u_max = LOADING_CONFIG["u_max"]
     n_bnd = COLLOCATION_CONFIG.get("n_boundary_per_segment", 400)
 

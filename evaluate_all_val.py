@@ -55,7 +55,7 @@ def evaluate_geometry(model, mesh, coll, device):
     """Run the model on one geometry and return numpy field arrays."""
     mu = MATERIAL_CONFIG["mu"]
     lam = MATERIAL_CONFIG["lam"]
-    state = MATERIAL_CONFIG.get("state", "plane strain")
+    state = MATERIAL_CONFIG["state"]
 
     def _t(arr):
         return torch.tensor(arr, dtype=torch.float32, device=device).unsqueeze(0)

@@ -7,29 +7,98 @@ All functions operate on batched displacement-gradient tensors [B, N, 1]
 and return stress components in the same shape.
 
 Neo-Hookean strain energy (compressible, 3D):
-    W = (μ/2)(tr(F^T F) - 3) - μ ln(J) + (λ/2)(ln J)²
-    where J = det(F), F = I + ∇u
+    W = (mu/2)(tr(F^T F) - 3) - mu ln(J) + (lam/2)(ln J)^2
+    where J = det(F), F = I + grad(u)
 
-First Piola–Kirchhoff stress (reference configuration):
-    P = μ F + (λ ln J − μ) F^{-T}
+First Piola-Kirchhoff stress (reference configuration):
+    P = mu F + (lam ln J - mu) F^{-T}
 
 Cauchy stress (current configuration, for post-processing only):
-    σ = (1/J) P F^T
+    sigma = (1/J) P F^T
 
 Equilibrium and traction BCs use P in the reference frame:
     Div(P) = 0          (interior equilibrium)
-    P · N  = 0          (traction-free boundaries, N = reference normal)
+    P . N  = 0          (traction-free boundaries, N = reference normal)
 
-Plane stress support:
-    For thin specimens, F33 is solved from P33 = 0 using Newton iteration
-    (5 steps, differentiable through PyTorch autograd).  The 3D determinant
-    J = J2D * F33 replaces J2D in the log term.
+Plane stress support
+--------------------
+For a thin specimen, F33 is solved from P33 = 0.  Multiplying P33 = 0 by
+F33 gives the scalar residual actually solved here:
+
+    r(F33; J2D) = mu*F33^2 + lam*ln(J2D*F33) - mu = 0
+
+The solve runs in two stages: 12 Newton steps under ``torch.no_grad()`` take
+the residual to machine precision, then 2 *differentiable* Newton steps from
+that converged root reattach F33 to the autograd graph.  The graph therefore
+carries 2 clean steps instead of 5 clamped ones, and the values are exact
+rather than ~1e-11.
+
+The analytic first derivative is
+
+    dF33/dJ2D = -(lam/J2D) / (2*mu*F33 + lam/F33)
+
+which at J2D = 1, F33 = 1 gives -lam/(2*mu+lam) — exactly the small-strain
+plane-stress value -nu/(1-nu).  Note that a custom autograd Function which
+returns only this expression is *not* sufficient: ``equilibrium_residual``
+differentiates P once w.r.t. x and the optimiser differentiates again w.r.t.
+the parameters, so the second derivative of the closure is on the training
+path and a detached-IFT backward reports it as zero (~14% error).  See
+``solve_F33_plane_stress``.
+
+The 3D determinant J3D = J2D * F33 replaces J2D in the log term.
 """
+
+import warnings
 
 import torch
 
 # Minimum detF to prevent log(0) or log(negative) during early training.
 _DETF_MIN = 1e-6
+
+# Lower clamp applied to F33 during the Newton solve.  Hitting this bound
+# means the solve did not converge to a physical root.
+_F33_MIN = 1e-3
+
+# Convergence diagnostics for the plane-stress closure.  Collecting them
+# requires .item() calls, which force a host sync, so they are gathered only
+# every ``F33_DIAG_EVERY`` solves.  Set to 1 in tests, 0 to disable entirely.
+F33_DIAG_EVERY = 50
+_F33_CALL_COUNT = 0
+
+# Populated in-place by the most recent *checked* solve, so callers and tests
+# can inspect convergence without changing any return signature.  May be stale
+# between checks when F33_DIAG_EVERY > 1.
+LAST_F33_SOLVE = {
+    "n_iter": 0,
+    "max_residual": float("nan"),
+    "n_clamped": 0,
+    "max_step": float("nan"),
+    "checked_call": -1,
+}
+
+# Warn at most once per process if the closure fails to converge.
+_F33_WARNED = False
+
+
+def require_stress_state(stress_state):
+    """Validate the stress state, refusing to silently pick a constitutive model.
+
+    Every physics entry point used to default to ``'plane strain'``.  Any new
+    call site that forgot the argument would therefore have switched the
+    constitutive model without warning.  The default is now ``None`` and this
+    helper turns the omission into a loud error.
+    """
+    if stress_state is None:
+        raise ValueError(
+            "stress_state must be given explicitly ('plane strain' or "
+            "'plane stress') — pass MATERIAL_CONFIG['state']."
+        )
+    if stress_state not in ("plane strain", "plane stress"):
+        raise ValueError(
+            f"Unknown stress_state {stress_state!r}; expected "
+            "'plane strain' or 'plane stress'."
+        )
+    return stress_state
 
 
 def deformation_gradient(
@@ -38,7 +107,7 @@ def deformation_gradient(
     dv_dx: torch.Tensor,
     dv_dy: torch.Tensor,
 ) -> tuple:
-    """Build the 2D deformation gradient F = I + ∇u.
+    """Build the 2D deformation gradient F = I + grad(u).
 
     Args:
         du_dx, du_dy, dv_dx, dv_dy: [B, N, 1] displacement gradients.
@@ -54,43 +123,104 @@ def deformation_gradient(
     return F11, F12, F21, F22, detF
 
 
-def _solve_F33_plane_stress(J2D: torch.Tensor, mu: float, lam: float,
-                            n_iter: int = 5) -> torch.Tensor:
-    """Solve P33 = 0 for F33 via Newton iteration (differentiable).
+def _newton_F33(J: torch.Tensor, mu, lam, n_iter: int) -> tuple:
+    """Newton iteration on r(F33) = 0.  Caller controls grad mode.
 
-    For Neo-Hookean:
-        P33 = μ F33 + (λ ln(J2D·F33) − μ) / F33
-    Setting P33 = 0 and solving for F33.
+    Returns (F33, last_step); ``last_step`` is a convergence diagnostic.
+    """
+    F33 = torch.ones_like(J)
+    step = torch.zeros_like(J)
+    for _ in range(n_iter):
+        r = mu * F33 * F33 + lam * torch.log(J * F33) - mu
+        dr = 2.0 * mu * F33 + lam / F33
+        step = r / dr
+        F33 = torch.clamp(F33 - step, min=_F33_MIN)
+    return F33, step
 
-    Newton update:
-        g   = μ F33 + (λ ln(J2D·F33) − μ) / F33
-        g'  = μ + (λ − λ ln(J2D·F33) + μ) / F33²
-        F33 ← F33 − g / g'
+
+def solve_F33_plane_stress(J2D: torch.Tensor, mu, lam,
+                           n_iter: int = 12,
+                           n_correct: int = 2) -> torch.Tensor:
+    """Out-of-plane stretch F33 satisfying P33 = 0 (plane stress closure).
+
+    Two-stage solve:
+
+    1. ``n_iter`` Newton steps under ``torch.no_grad()`` drive the residual to
+       machine precision.  No autograd graph is built, so this stage is free
+       in both memory and graph depth.
+    2. ``n_correct`` *differentiable* Newton steps starting from that converged
+       root.  Their values are unchanged (r ~ 0, so each step moves F33 by
+       ~1e-16), but they reconnect F33 to the graph with the correct
+       derivatives.
+
+    Why not a pure implicit-function-theorem backward?  An IFT backward built
+    from *detached* saved tensors is exact to first order but reports
+    d2F33/dJ2D2 = 0.  ``equilibrium_residual`` differentiates P once w.r.t. x
+    and the optimiser then differentiates again w.r.t. the parameters, so the
+    second derivative of the closure is on the training path: a pure-IFT
+    backward silently biases it by ~14% (measured against the exact Lambert-W
+    solution).  One differentiable Newton step is equivalent to IFT and has
+    the same defect; two steps recover the second derivative to ~1e-8
+    (finite-difference reference precision) and a third changes nothing.  See
+    ``tests/test_physics.py::test_F33_second_derivative``.
+
+    Cost versus the previous implementation: values are exact instead of
+    ~1e-11, and the graph carries 2 clean Newton steps instead of 5 with
+    clamps and epsilon guards.
 
     Args:
-        J2D:    [B, N, 1] in-plane determinant (may be < 0 at init).
-        mu:     Shear modulus.
-        lam:    Lamé second parameter.
-        n_iter: Number of Newton iterations (default 5).
+        J2D:       [B, N, 1] in-plane determinant.  Values below ``_DETF_MIN``
+                   (possible early in training) are clamped.
+        mu:        Shear modulus (float or tensor).
+        lam:       Lame second parameter (float or tensor).
+        n_iter:    Detached Newton iterations (default 12).
+        n_correct: Differentiable correction steps (default 2 — do not lower
+                   this to 1, see above).
 
     Returns:
-        F33: [B, N, 1] out-of-plane stretch satisfying P33 ≈ 0.
+        F33: [B, N, 1] out-of-plane stretch satisfying P33 ~ 0.
     """
-    J2D_safe = torch.clamp(J2D, min=_DETF_MIN)
-    F33 = torch.ones_like(J2D_safe)
+    global _F33_CALL_COUNT, _F33_WARNED
 
-    for _ in range(n_iter):
-        J3D = J2D_safe * F33
-        J3D = torch.clamp(J3D, min=_DETF_MIN)
-        logJ = torch.log(J3D)
+    J = torch.clamp(J2D, min=_DETF_MIN)
 
-        # P33 = μ F33 + (λ ln J − μ) / F33
-        g = mu * F33 + (lam * logJ - mu) / F33
-        # dP33/dF33 = μ + (λ − λ ln J + μ) / F33²
-        dg = mu + (lam - lam * logJ + mu) / (F33 ** 2 + 1e-12)
-        F33 = F33 - g / (dg + 1e-12)
-        # Clamp to keep F33 physical
-        F33 = torch.clamp(F33, min=0.01)
+    with torch.no_grad():
+        F33, step = _newton_F33(J.detach(), mu, lam, n_iter)
+
+        _F33_CALL_COUNT += 1
+        if F33_DIAG_EVERY and _F33_CALL_COUNT % F33_DIAG_EVERY == 0:
+            resid = mu * F33 * F33 + lam * torch.log(J.detach() * F33) - mu
+            mu_abs = float(torch.as_tensor(mu).abs().max())
+            max_resid = float((resid.abs().max() / mu_abs).item())
+            n_clamped = int((F33 <= _F33_MIN * (1.0 + 1e-12)).sum().item())
+
+            LAST_F33_SOLVE.update(
+                n_iter=n_iter,
+                max_residual=max_resid,
+                n_clamped=n_clamped,
+                max_step=float(step.abs().max().item()),
+                checked_call=_F33_CALL_COUNT,
+            )
+
+            # Newton cannot beat the working precision: float32 bottoms out
+            # around 1e-7 relative, float64 around 1e-15.
+            tol = 64.0 * torch.finfo(J.dtype).eps
+            if (max_resid > tol or n_clamped > 0) and not _F33_WARNED:
+                _F33_WARNED = True
+                warnings.warn(
+                    "plane-stress F33 closure did not converge cleanly "
+                    f"(max |r|/mu = {max_resid:.3e} > tol {tol:.1e}, "
+                    f"{n_clamped} points clamped at the lower bound). "
+                    "Deformation may be unphysical; check the J barrier.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+    # Differentiable correction steps: values unchanged, derivatives attached.
+    for _ in range(n_correct):
+        r = mu * F33 * F33 + lam * torch.log(J * F33) - mu
+        dr = 2.0 * mu * F33 + lam / F33
+        F33 = torch.clamp(F33 - r / dr, min=_F33_MIN)
 
     return F33
 
@@ -102,55 +232,64 @@ def first_piola_kirchhoff_stress(
     dv_dy: torch.Tensor,
     mu: float,
     lam: float,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
+    return_J3D: bool = False,
 ) -> tuple:
-    """Compute 1st Piola–Kirchhoff stress P for Neo-Hookean material.
+    """Compute 1st Piola-Kirchhoff stress P for a Neo-Hookean material.
 
-    P = μ F + (λ ln J − μ) F^{-T}
+    P = mu F + (lam ln J - mu) F^{-T}
 
     For plane strain:  F33 = 1, J = J2D.
-    For plane stress:  F33 solved from P33 = 0, J = J2D · F33.
+    For plane stress:  F33 solved from P33 = 0, J = J2D * F33.
 
     In both cases, the in-plane F^{-T} components are computed from
     the 2D submatrix (divided by J2D, not J3D).
 
     Args:
         du_dx, du_dy, dv_dx, dv_dy: [B, N, 1] displacement gradients.
-        mu:  Shear modulus (Lamé first parameter).
-        lam: Lamé second parameter.
-        stress_state: 'plane strain' or 'plane stress'.
+        mu:  Shear modulus (Lame first parameter).
+        lam: Lame second parameter.
+        stress_state: 'plane strain' or 'plane stress'.  Required.
+        return_J3D: if True, also return the 3D determinant J3D = J2D * F33
+            (equal to J2D under plane strain).  The J barrier must guard J3D,
+            since F33 < 1 in tension makes J3D the more critical quantity.
 
     Returns:
-        P11, P12, P21, P22, detF: each [B, N, 1].
-        detF is the in-plane determinant J2D (for barrier loss).
+        P11, P12, P21, P22, detF                (return_J3D=False)
+        P11, P12, P21, P22, detF, J3D           (return_J3D=True)
+        each [B, N, 1].  detF is the in-plane determinant J2D.
     """
+    require_stress_state(stress_state)
+
     F11, F12, F21, F22, detF = deformation_gradient(du_dx, du_dy, dv_dx, dv_dy)
 
     J2D = detF
     J2D_safe = torch.clamp(J2D, min=_DETF_MIN)
 
     # In-plane F^{-T} (always uses J2D, not J3D):
-    invFT11 =  F22 / J2D_safe
+    invFT11 = F22 / J2D_safe
     invFT12 = -F21 / J2D_safe
     invFT21 = -F12 / J2D_safe
-    invFT22 =  F11 / J2D_safe
+    invFT22 = F11 / J2D_safe
 
     if stress_state == "plane stress":
-        F33 = _solve_F33_plane_stress(J2D, mu, lam)
-        J3D = J2D_safe * F33
-        J3D = torch.clamp(J3D, min=_DETF_MIN)
+        F33 = solve_F33_plane_stress(J2D, mu, lam)
+        J3D = torch.clamp(J2D_safe * F33, min=_DETF_MIN)
         logJ = torch.log(J3D)
     else:
         # Plane strain: F33 = 1, J = J2D
+        J3D = J2D_safe
         logJ = torch.log(J2D_safe)
 
-    coeff = lam * logJ - mu          # (λ ln J − μ)
+    coeff = lam * logJ - mu          # (lam ln J - mu)
 
     P11 = mu * F11 + coeff * invFT11
     P12 = mu * F12 + coeff * invFT12
     P21 = mu * F21 + coeff * invFT21
     P22 = mu * F22 + coeff * invFT22
 
+    if return_J3D:
+        return P11, P12, P21, P22, detF, J3D
     return P11, P12, P21, P22, detF
 
 
@@ -161,38 +300,34 @@ def cauchy_stress(
     dv_dy: torch.Tensor,
     mu: float,
     lam: float,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
 ) -> tuple:
-    """Compute Cauchy stress σ = (1/J) P Fᵀ (for post-processing only).
+    """Compute Cauchy stress sigma = (1/J) P F^T (for post-processing only).
 
     NOT used for PDE residuals — use first_piola_kirchhoff_stress() instead.
 
-    For plane stress, J3D = J2D · F33 is used for the 1/J factor.
+    For plane stress, J3D = J2D * F33 is used for the 1/J factor.  J3D is
+    taken from the P computation rather than re-solving the closure, which
+    halves the cost of every post-processing path.
 
     Args:
         du_dx, du_dy, dv_dx, dv_dy: [B, N, 1] displacement gradients.
-        mu, lam: Lamé parameters.
-        stress_state: 'plane strain' or 'plane stress'.
+        mu, lam: Lame parameters.
+        stress_state: 'plane strain' or 'plane stress'.  Required.
 
     Returns:
         S11, S22, S12, detF: each [B, N, 1].
     """
+    require_stress_state(stress_state)
+
     F11, F12, F21, F22, detF = deformation_gradient(du_dx, du_dy, dv_dx, dv_dy)
-    P11, P12, P21, P22, _ = first_piola_kirchhoff_stress(
-        du_dx, du_dy, dv_dx, dv_dy, mu, lam, stress_state
+    P11, P12, P21, P22, _, J3D = first_piola_kirchhoff_stress(
+        du_dx, du_dy, dv_dx, dv_dy, mu, lam, stress_state, return_J3D=True
     )
 
-    J2D = detF
-    J2D_safe = torch.clamp(J2D, min=_DETF_MIN)
+    inv_J = 1.0 / torch.clamp(J3D, min=_DETF_MIN)
 
-    if stress_state == "plane stress":
-        F33 = _solve_F33_plane_stress(J2D, mu, lam)
-        J3D = J2D_safe * F33
-        inv_J = 1.0 / torch.clamp(J3D, min=_DETF_MIN)
-    else:
-        inv_J = 1.0 / J2D_safe
-
-    # σ = (1/J) P Fᵀ
+    # sigma = (1/J) P F^T
     S11 = inv_J * (P11 * F11 + P12 * F12)
     S22 = inv_J * (P21 * F21 + P22 * F22)
     S12 = inv_J * (P11 * F21 + P12 * F22)
@@ -207,20 +342,22 @@ def full_stress_state(
     dv_dy: torch.Tensor,
     mu: float,
     lam: float,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
 ) -> tuple:
-    """Compute full Cauchy stress including out-of-plane σ₃₃ (post-processing).
+    """Compute full Cauchy stress including out-of-plane sigma_33.
 
     For plane strain Neo-Hookean:
-        F33 = 1  →  det(F_3D) = det(F_2D) = J
-        σ₃₃ = λ ln(J) / J
+        F33 = 1  ->  det(F_3D) = det(F_2D) = J
+        sigma_33 = lam ln(J) / J
 
     For plane stress:
-        σ₃₃ = 0  (by definition; F33 solved from P33=0)
+        sigma_33 = 0  (by definition; F33 solved from P33 = 0)
 
     Returns:
         S11, S22, S33, S12, detF: each [B, N, 1].
     """
+    require_stress_state(stress_state)
+
     S11, S22, S12, detF = cauchy_stress(
         du_dx, du_dy, dv_dx, dv_dy, mu, lam, stress_state
     )
@@ -242,7 +379,8 @@ def von_mises_stress(
 ) -> torch.Tensor:
     """Compute von Mises equivalent stress (post-processing).
 
-    σ_vm = √( σ₁₁² + σ₂₂² + σ₃₃² − σ₁₁σ₂₂ − σ₂₂σ₃₃ − σ₁₁σ₃₃ + 3σ₁₂² )
+    sigma_vm = sqrt( s11^2 + s22^2 + s33^2 - s11 s22 - s22 s33 - s11 s33
+                     + 3 s12^2 )
     """
     return torch.sqrt(
         S11**2 + S22**2 + S33**2

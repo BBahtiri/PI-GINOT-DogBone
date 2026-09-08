@@ -357,7 +357,7 @@ class InferenceEngine:
             nu=MATERIAL_CONFIG["nu"],
             mu=MATERIAL_CONFIG["mu"],
             lam=MATERIAL_CONFIG["lam"],
-            state=MATERIAL_CONFIG.get("state", "plane strain"),
+            state=MATERIAL_CONFIG["state"],
         )
 
         # Build training bank params using checkpoint-recorded config

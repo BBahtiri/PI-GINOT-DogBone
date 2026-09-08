@@ -973,7 +973,7 @@ class PI_GINOT_Trainer:
         L_half = fi["L_half"]
         mu = MATERIAL_CONFIG["mu"]
         lam = MATERIAL_CONFIG["lam"]
-        state = MATERIAL_CONFIG.get("state", "plane strain")
+        state = MATERIAL_CONFIG["state"]
         holes = mesh.params.get("holes", [])
 
         if n_slices <= 6:
@@ -1113,7 +1113,7 @@ class PI_GINOT_Trainer:
                 )
                 P11, _, _, _, detF = first_piola_kirchhoff_stress(
                     du_dx, du_dy, dv_dx, dv_dy, mu, lam,
-                    MATERIAL_CONFIG.get("state", "plane strain"),
+                    MATERIAL_CONFIG["state"],
                 )
 
             # Section means
@@ -1238,7 +1238,7 @@ class PI_GINOT_Trainer:
         batch_size = self.config["batch_size"]
         mu = MATERIAL_CONFIG["mu"]
         lam = MATERIAL_CONFIG["lam"]
-        state = MATERIAL_CONFIG.get("state", "plane strain")
+        state = MATERIAL_CONFIG["state"]
 
         # Use a separate RNG so field-plot sampling doesn't disturb training
         plot_rng = np.random.default_rng(epoch)
@@ -1357,7 +1357,7 @@ class PI_GINOT_Trainer:
 
         mu = MATERIAL_CONFIG["mu"]
         lam = MATERIAL_CONFIG["lam"]
-        state = MATERIAL_CONFIG.get("state", "plane strain")
+        state = MATERIAL_CONFIG["state"]
 
         # Dense collocation for smooth profiles
         dense_rng = np.random.default_rng(999)
@@ -1663,7 +1663,7 @@ class PI_GINOT_Trainer:
         n_val = len(self._val_bank)
         mu = MATERIAL_CONFIG["mu"]
         lam = MATERIAL_CONFIG["lam"]
-        state = MATERIAL_CONFIG.get("state", "plane strain")
+        state = MATERIAL_CONFIG["state"]
 
         # Step 1: encode all val geometries
         latents = []   # list of [1, n_tok, dim] tensors

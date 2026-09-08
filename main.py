@@ -44,7 +44,7 @@ def inspect_initial_state(model, device="cpu"):
 
     rng = np.random.default_rng(123)
 
-    stress_state = MATERIAL_CONFIG.get("state", "plane strain")
+    stress_state = MATERIAL_CONFIG["state"]
 
     # Use geometry consistent with the training mode
     if TRAINING_CONFIG.get("single_geometry", False):
@@ -162,7 +162,7 @@ def main():
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
 
     # Stress state
-    stress_state = MATERIAL_CONFIG.get("state", "plane strain")
+    stress_state = MATERIAL_CONFIG["state"]
     print(f"  Stress formulation: {stress_state}")
 
     # Loss
