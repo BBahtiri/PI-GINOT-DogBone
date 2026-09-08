@@ -62,6 +62,7 @@ def equilibrium_residual(
     y_max: torch.Tensor = None,
     stress_state: str = None,
     return_J3D: bool = False,
+    create_graph: bool = True,
 ) -> tuple:
     """Compute equilibrium residual Div(P) = 0 at interior points.
 
@@ -73,6 +74,11 @@ def equilibrium_residual(
         f_x, f_y: [B, N, 1] equilibrium residuals (should → 0).
         detF:     [B, N, 1] in-plane determinant J2D (for barrier loss).
         J3D:      [B, N, 1] 3D determinant, only if return_J3D=True.
+
+    ``create_graph`` must stay True for training (the optimiser
+    differentiates this residual again).  Pass False for evaluation-only
+    calls: the second-order graph is then never built, which is a large
+    memory saving on a dense point set.
     """
     out = _predict_piola(
         model, query_pts, geometry_latent, u_delta, x_max, mu, lam,
@@ -87,16 +93,16 @@ def equilibrium_residual(
 
     # P is NOT symmetric → need 4 separate grad calls
     dP11 = torch.autograd.grad(
-        P11, query_pts, ones, create_graph=True, retain_graph=True
+        P11, query_pts, ones, create_graph=create_graph, retain_graph=True
     )[0]  # [B, N, 2]
     dP12 = torch.autograd.grad(
-        P12, query_pts, ones, create_graph=True, retain_graph=True
+        P12, query_pts, ones, create_graph=create_graph, retain_graph=True
     )[0]
     dP21 = torch.autograd.grad(
-        P21, query_pts, ones, create_graph=True, retain_graph=True
+        P21, query_pts, ones, create_graph=create_graph, retain_graph=True
     )[0]
     dP22 = torch.autograd.grad(
-        P22, query_pts, ones, create_graph=True, retain_graph=True
+        P22, query_pts, ones, create_graph=create_graph, retain_graph=True
     )[0]
 
     # Div(P)_i = ∂P_{iJ}/∂X_J

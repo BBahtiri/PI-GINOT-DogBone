@@ -34,3 +34,8 @@ PROJECT_CODE.txt
 
 # Local app logs
 streamlit*.log
+
+# The frozen dense evaluation set IS committed (eval/dense_eval.npz):
+# every reported ||Div P|| and ||P.N|| refers to those exact points, and
+# scipy's Sobol scrambling is not guaranteed stable across versions.
+# Regenerate with:  python -m eval.dense_eval --build

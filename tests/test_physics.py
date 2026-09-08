@@ -348,3 +348,56 @@ def test_checkpoint_legacy_keys_are_stripped():
     clean, dropped = PI_GINOT.strip_legacy_keys(state)
     assert len(dropped) == 2
     model.load_state_dict(clean)
+
+
+# ------------------------------------------------------------- dense eval --
+
+def test_dense_eval_is_deterministic(tmp_path):
+    """Rebuilding the frozen set from its seed reproduces it exactly.
+
+    The artefact is committed, but it must also be regenerable: the numbers in
+    the paper are only meaningful if the point set behind them can be rebuilt.
+    """
+    from eval.dense_eval import build_dense_eval_set, load_dense_eval_set
+
+    params = [dict(GEOMETRY_DEFAULT),
+              dict(L_total=44.0, W_grip=24.0, W_gauge=8.0, R_fillet=16.0,
+                   holes=[])]
+    a = build_dense_eval_set(params, n_interior=2048,
+                             n_boundary_per_segment=64,
+                             path=str(tmp_path / "a.npz"))
+    b = build_dense_eval_set(params, n_interior=2048,
+                             n_boundary_per_segment=64,
+                             path=str(tmp_path / "b.npz"))
+    for ga, gb in zip(a, b):
+        assert np.array_equal(ga.interior, gb.interior)
+        assert np.array_equal(ga.boundary_pc, gb.boundary_pc)
+
+    loaded = load_dense_eval_set(str(tmp_path / "a.npz"))
+    for ga, gl in zip(a, loaded):
+        assert ga.params == gl.params
+        assert np.array_equal(ga.interior, gl.interior)
+        assert set(ga.boundary_pts) == set(gl.boundary_pts)
+
+
+def test_dense_eval_points_are_inside_the_domain():
+    """Every interior point of the frozen set satisfies the inside test."""
+    from geometry.parametric_dogbone import _point_in_dogbone
+    from eval.dense_eval import build_dense_eval_set
+
+    g = build_dense_eval_set([dict(GEOMETRY_DEFAULT)], n_interior=4096,
+                             n_boundary_per_segment=64, path=None)[0]
+    x, y = g.interior[:, 0], g.interior[:, 1]
+    assert _point_in_dogbone(x, y, g.fillet_info).all()
+
+
+def test_val_bank_matches_the_trainer_builder():
+    """val_bank_params reproduces the meshes the trainer validates on."""
+    from config import TRAINING_CONFIG
+    from geometry.banks import (VAL_BANK_SEED, build_geometry_bank,
+                                val_bank_params)
+
+    n = 4
+    ranges = TRAINING_CONFIG["bank_geo_ranges"]
+    bank = build_geometry_bank(n, ranges, holes_on=False, seed=VAL_BANK_SEED)
+    assert [m.params for m, _ in bank] == val_bank_params(n, ranges)

@@ -38,6 +38,8 @@ from config import (
     GEOMETRY_DEFAULT, NONDIM_SCALES, HOLE_CONFIG,
 )
 from geometry.parametric_dogbone import generate_dogbone, sample_geometry_params, plot_dogbone
+from geometry.banks import (TRAIN_BANK_SEED, VAL_BANK_SEED,
+                            build_geometry_bank)
 from geometry.collocation import sample_collocation_points
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
@@ -170,7 +172,7 @@ class PI_GINOT_Trainer:
         if self._use_train_bank and not self.single_geometry:
             n_train = self.config.get("bank_train_size", 128)
             self._train_bank = self._build_geometry_bank(
-                n_train, bank_ranges, holes_on=False, seed=100,
+                n_train, bank_ranges, holes_on=False, seed=TRAIN_BANK_SEED,
                 mesh_only=self._resample_train_coll,
             )
             mode_str = "params-only (mesh+coll regenerated)" if self._resample_train_coll else "fixed coll"
@@ -186,7 +188,7 @@ class PI_GINOT_Trainer:
             n_val = self.config.get("bank_val_size", 8)
             # No-hole validation bank
             self._val_bank = self._build_geometry_bank(
-                n_val, bank_ranges, holes_on=False, seed=200,
+                n_val, bank_ranges, holes_on=False, seed=VAL_BANK_SEED,
             )
             print(f"  [Val bank: no-hole] {n_val} fixed geometries")
             for i, (m, _) in enumerate(self._val_bank):
@@ -205,30 +207,12 @@ class PI_GINOT_Trainer:
                              min_holes: int = 0, mesh_only: bool = False):
         """Pre-generate a fixed bank of geometries.
 
-        When mesh_only=True (train bank), returns a list of geometry
-        parameter dicts.  The mesh and collocation are regenerated fresh
-        each epoch so interior + boundary points vary, giving better
-        operator-learning coverage.
-
-        When mesh_only=False (val bank), returns (mesh, coll) pairs with
-        frozen collocation for clean progress tracking.
+        Thin wrapper over geometry.banks.build_geometry_bank so the trainer
+        and the evaluation code cannot drift apart on which specimens the
+        val bank contains.
         """
-        bank_rng = np.random.default_rng(seed)
-        bank = []
-        for _ in range(n):
-            params = sample_geometry_params(
-                bank_rng, geometry_ranges=geo_ranges,
-                holes_enabled=holes_on,
-            )
-            if mesh_only:
-                bank.append(params)
-            else:
-                n_bnd_seg = COLLOCATION_CONFIG.get("n_boundary_per_segment", 400)
-                mesh = generate_dogbone(params, n_pts_per_segment=n_bnd_seg,
-                                        rng=bank_rng)
-                coll = sample_collocation_points(mesh, rng=bank_rng)
-                bank.append((mesh, coll))
-        return bank
+        return build_geometry_bank(n, geo_ranges, holes_on, seed,
+                                   mesh_only=mesh_only)
 
     # Core training loop
     def fit(self, epochs: Optional[int] = None, print_every: Optional[int] = None):
