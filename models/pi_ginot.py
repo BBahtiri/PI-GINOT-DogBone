@@ -20,30 +20,6 @@ from .physics_decoder import PhysicsDecoder
 
 
 
-class GeometryAuxHead(nn.Module):
-    """Predict normalised geometry parameters from pooled latent.
-
-    Outputs 8 values: L_total, W_grip, W_gauge, R_fillet,
-    hole_present (sigmoid), cx, cy, r.
-    For no-hole cases, cx/cy/r regression loss is masked.
-    """
-
-    def __init__(self, d_in: int, d_hidden: int = 128, d_out: int = 8):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_in, d_hidden),
-            nn.GELU(),
-            nn.Linear(d_hidden, d_hidden),
-            nn.GELU(),
-            nn.Linear(d_hidden, d_out),
-        )
-
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """Args: z [B, n_tok, dim]. Returns: [B, d_out]."""
-        z_pool = z.mean(dim=1)
-        return self.net(z_pool)
-
-
 class PI_GINOT(nn.Module):
     """Full PI-GINOT model: geometry encoder + physics decoder.
 
@@ -51,6 +27,23 @@ class PI_GINOT(nn.Module):
         encoder_config: dict for GeometryEncoder (ENCODER_CONFIG).
         decoder_config: dict for PhysicsDecoder (DECODER_CONFIG).
     """
+
+    # Legacy state_dict prefixes that no longer exist on this model.  Kept so
+    # checkpoints trained before the head was removed still load.
+    LEGACY_PREFIXES = ("geom_aux_head.",)
+
+    @classmethod
+    def strip_legacy_keys(cls, state_dict: dict) -> tuple:
+        """Drop parameters belonging to removed submodules.
+
+        Returns (clean_state_dict, dropped_key_names).
+        """
+        dropped = [k for k in state_dict
+                   if k.startswith(cls.LEGACY_PREFIXES)]
+        if not dropped:
+            return state_dict, []
+        clean = {k: v for k, v in state_dict.items() if k not in dropped}
+        return clean, dropped
 
     def __init__(self, encoder_config: dict, decoder_config: dict):
         super().__init__()
@@ -62,13 +55,6 @@ class PI_GINOT(nn.Module):
 
         self.encoder = GeometryEncoder(encoder_config)
         self.decoder = PhysicsDecoder(decoder_config)
-
-        # Geometry auxiliary head (latent supervision)
-        self.geom_aux_head = GeometryAuxHead(
-            d_in=encoder_config["out_c"],
-            d_hidden=128,
-            d_out=8,
-        )
 
     # Encode-once pattern
     def encode(
@@ -211,10 +197,6 @@ class PI_GINOT(nn.Module):
         y_norm = 2.0 * y / y_scale - 1.0
 
         return torch.cat([x_norm, y_norm], dim=-1)
-
-    def predict_geometry(self, geometry_latent: torch.Tensor) -> torch.Tensor:
-        """Predict geometry parameters from latent. Returns [B, 8]."""
-        return self.geom_aux_head(geometry_latent)
 
     def count_parameters(self) -> dict:
         enc = self.encoder.count_parameters()

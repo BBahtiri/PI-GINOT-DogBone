@@ -220,7 +220,7 @@ def main():
     print(f"Loading checkpoint: {args.checkpoint}")
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(PI_GINOT.strip_legacy_keys(ckpt["model_state_dict"])[0])
     model = model.to(device)
     model.eval()
     epoch = ckpt.get("epoch", "?")

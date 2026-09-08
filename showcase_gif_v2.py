@@ -88,7 +88,7 @@ def load_model(ckpt_path, device):
     print(f"Loading checkpoint: {ckpt_path}")
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(PI_GINOT.strip_legacy_keys(ckpt["model_state_dict"])[0])
     model.eval()
     epoch = ckpt.get("epoch", "?")
     print(f"  Loaded from epoch {epoch}  |  "

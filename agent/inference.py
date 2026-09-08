@@ -347,7 +347,9 @@ class InferenceEngine:
 
         # Build model
         model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(
+            PI_GINOT.strip_legacy_keys(checkpoint["model_state_dict"])[0]
+        )
         model.to(dev)
         model.eval()
 

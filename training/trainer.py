@@ -132,7 +132,7 @@ class PI_GINOT_Trainer:
             "L_eq": [], "L_trac_top": [], "L_trac_arc": [],
             "L_trac_hole": [], "L_part": [], "L_barrier": [], "L_resultant": [],
             "w_eq": [], "w_trac_top": [], "w_trac_arc": [],
-            "val_raw_loss": [], "val_hole_loss": [],
+            "val_raw_loss": [],
             "ckpt_swap_du": [], "ckpt_section_cv": [],
             "lr": [], "phase": [],
         }
@@ -196,9 +196,6 @@ class PI_GINOT_Trainer:
                       f"W_gauge={p['W_gauge']:.1f} "
                       f"R={p['R_fillet']:.1f}")
 
-            # Hole validation bank — permanently disabled
-            self._val_bank_hole = []
-
         if not self._use_train_bank and not self.single_geometry:
             print(f"  [Online random training] sampling from bank_geo_ranges")
 
@@ -240,11 +237,26 @@ class PI_GINOT_Trainer:
         print_every = print_every or self.config["print_every"]
         batch_size = self.config["batch_size"]
         u_max = LOADING_CONFIG["u_max"]
-        clip_norm = self.config.get("grad_clip_norm", 0.5)
+        clip_norm = self.config.get("grad_clip_norm",
+                                    TRAINING_CONFIG["grad_clip_norm"])
         adaptive_every = self.config.get("adaptive_update_every", 100)
         use_adaptive = self.config.get("use_adaptive_weights", True)
 
         adaptive_start = self.config.get("adaptive_start_epoch", 200)
+
+        # Barrier warmup: w_bar decays geometrically from its initial value to
+        # barrier_final_weight over barrier_warmup_epochs, then holds.  These
+        # two config keys were declared but never read, so the barrier stayed
+        # at 1e3 for all 1500 epochs -- a strong permanent pull long after the
+        # determinant has locked well above j_min.
+        bar_warm = int(self.config.get("barrier_warmup_epochs", 0) or 0)
+        # Anchor the ramp on the configured initial weight, not on the live
+        # buffer, so resuming mid-schedule does not restart from a decayed value.
+        bar_w0 = float(self.config.get("w_barrier", self.loss_fn.w_bar.item()))
+        bar_wT = float(self.config.get("barrier_final_weight", bar_w0))
+        if bar_warm > 0:
+            print(f"  Barrier warmup: w_bar {bar_w0:.3g} -> {bar_wT:.3g} "
+                  f"over {bar_warm} epochs")
 
         print(f"Training PI-GINOT for {epochs} epochs, batch_size={batch_size}, "
               f"device={self.device}")
@@ -280,13 +292,12 @@ class PI_GINOT_Trainer:
                                         prefix="val_nohole")
             print(f"  Saved {len(self._val_bank)} val-bank (no-hole) geometry plots")
 
-        if self.save_geo and hasattr(self, "_val_bank_hole") and self._val_bank_hole:
-            for i, (m, _) in enumerate(self._val_bank_hole):
-                self._save_geometry_plot(m, epoch=0, geo_idx=i,
-                                        prefix="val_hole")
-            print(f"  Saved {len(self._val_bank_hole)} val-bank (hole) geometry plots")
-
         for epoch in range(self.start_epoch, epochs):
+
+            # Barrier weight schedule (geometric ramp, then hold)
+            if bar_warm > 0 and bar_w0 > 0.0:
+                frac = min(1.0, epoch / bar_warm)
+                self.loss_fn.w_bar.fill_(bar_w0 * (bar_wT / bar_w0) ** frac)
 
             # Output scale: fixed at 1.0 (no warmup — let network correct from epoch 0)
             self.model.decoder.output_scale = 1.0
@@ -340,14 +351,8 @@ class PI_GINOT_Trainer:
 
             # Periodic validation on fixed geometry set
             val_raw = None
-            val_hole = None
             if (epoch + 1) % self._val_every == 0 or epoch == 0:
                 val_raw = self._evaluate_validation(geo_ranges, holes_on, u_max)
-
-                # Hole-bank validation (separate tracking)
-                val_hole = None
-                if self._val_bank_hole:
-                    val_hole = self._evaluate_validation_hole(u_max)
 
                 # EMA-smooth the validation loss for LR scheduler
                 if self._ema_loss is None:
@@ -379,14 +384,14 @@ class PI_GINOT_Trainer:
             self.history["L_barrier"].append(batch_loss["L_barrier"])
             self.history["L_resultant"].append(
                 batch_loss.get("L_resultant_log", 0.0))
-            self.history.setdefault("L_geom_aux", []).append(
-                batch_loss.get("L_geom_aux_log", 0.0))
+            self.history.setdefault("min_J2D", []).append(
+                batch_loss.get("min_J2D", float("nan")))
+            self.history.setdefault("min_J3D", []).append(
+                batch_loss.get("min_J3D", float("nan")))
             self.history["w_eq"].append(w_eq_val)
             self.history["w_trac_top"].append(w_top_val)
             self.history["w_trac_arc"].append(w_arc_val)
             self.history["val_raw_loss"].append(val_raw)
-            self.history["val_hole_loss"].append(
-                val_hole if val_hole is not None else None)
             self.history["lr"].append(current_lr)
             self.history["phase"].append(phase)
 
@@ -428,7 +433,7 @@ class PI_GINOT_Trainer:
             if (epoch + 1) % print_every == 0 or epoch == 0:
                 dt = time.time() - t0
                 val_str = f"val={val_raw:.3e}" if val_raw is not None else "val=—"
-                val_h_str = f" val_h={val_hole:.3e}" if val_hole is not None else ""
+                val_h_str = ""
                 print(
                     f"Epoch {epoch+1:4d}/{epochs} | "
                     f"loss={batch_loss['loss']:.4e} raw={raw_loss:.4e} raw+res={raw_total:.4e} | "
@@ -565,67 +570,6 @@ class PI_GINOT_Trainer:
         return raw_total
 
 
-    def _evaluate_validation_hole(self, u_max):
-        """Evaluate model on fixed hole-bank validation geometries.
-
-        Same logic as _evaluate_validation but uses _val_bank_hole.
-        Returns mean raw loss including L_resultant.
-        """
-        if not self._val_bank_hole:
-            return None
-
-        self.model.eval()
-        raw_total = 0.0
-        n = len(self._val_bank_hole)
-
-        for val_idx, (mesh, coll) in enumerate(self._val_bank_hole):
-            def _t(arr):
-                return torch.tensor(arr, dtype=torch.float32,
-                                    device=self.device).unsqueeze(0)
-
-            interior = _t(coll.interior_pts).requires_grad_(True)
-            tf_pts = _t(coll.traction_free_pts).requires_grad_(True)
-            tf_norms = _t(coll.traction_free_normals)
-            pt_pts = _t(coll.partial_traction_pts).requires_grad_(True)
-            pt_norms = _t(coll.partial_traction_normals)
-            pt_dirs = torch.tensor(coll.partial_traction_dirs,
-                                   dtype=torch.long, device=self.device)
-            bpc = _t(coll.boundary_pc)
-            u_d = torch.tensor([u_max], dtype=torch.float32, device=self.device)
-            x_m = torch.tensor([coll.x_max], dtype=torch.float32, device=self.device)
-            y_m = torch.tensor([coll.y_max], dtype=torch.float32, device=self.device)
-            tf_tags = torch.tensor(coll.traction_free_tags,
-                                   dtype=torch.long, device=self.device)
-
-            # Deterministic FPS for hole val geometries (offset by 200)
-            v_sid = torch.tensor([200 + val_idx], dtype=torch.long,
-                                 device=self.device)
-
-            with torch.enable_grad():
-                ld = self.loss_fn(
-                    self.model, interior, tf_pts, tf_norms, tf_tags,
-                    pt_pts, pt_norms, pt_dirs, bpc, u_d, x_m, y_m,
-                    sample_ids=v_sid,
-                )
-
-                w_res = self.config.get("w_resultant", 0.0)
-                L_res_val = 0.0
-                if w_res > 0.0:
-                    L_res_val = self._compute_section_resultant_loss(
-                        self.model, ld["geometry_latent"], mesh,
-                        u_d, x_m, y_m,
-                        n_slices=self.config.get("n_resultant_slices", 10),
-                        n_y_pts=self.config.get("n_resultant_y_pts", 64),
-                    ).item()
-
-            raw = (ld["L_eq_log"] + ld["L_trac_top_log"] + ld["L_trac_arc_log"]
-                   + ld["L_trac_hole_log"] + ld["L_part_log"] + ld["L_barrier_log"]
-                   + w_res * L_res_val)
-            raw_total += raw / n
-
-        self.model.train()
-        return raw_total
-
     # Checkpoint gates: lightweight swap + section-CV check
     @torch.no_grad()
     def _checkpoint_gates(self, n_geo: int = 2) -> tuple:
@@ -692,8 +636,7 @@ class PI_GINOT_Trainer:
         # Section-force CV
         cv_vals = []
         for i in range(n_geo):
-            cv = self.run_section_force_diagnostic(val_idx=i, n_slices=6,
-                                                   use_hole_bank=False)
+            cv = self.run_section_force_diagnostic(val_idx=i, n_slices=6)
             if cv is not None:
                 cv_vals.append(cv)
 
@@ -715,6 +658,8 @@ class PI_GINOT_Trainer:
         accum = {"L_eq": 0.0, "L_trac_top": 0.0, "L_trac_arc": 0.0,
                  "L_trac_hole": 0.0, "L_part": 0.0, "L_barrier": 0.0,
                  "L_resultant": 0.0}
+        # Determinant floors are minima over the batch, not means.
+        mins = {"min_J2D": float("inf"), "min_J3D": float("inf")}
 
         # Without-replacement for bank: shuffle all, take batch_size
         if self._use_train_bank:
@@ -745,6 +690,8 @@ class PI_GINOT_Trainer:
             total_loss += loss_dict["loss"].detach() / batch_size
             for k in accum:
                 accum[k] += loss_dict[f"{k}_log"] / batch_size
+            for k in mins:
+                mins[k] = min(mins[k], loss_dict.get(f"{k}_log", float("inf")))
 
         nn.utils.clip_grad_norm_(self.model.parameters(), clip_norm)
         self.optimizer.step()
@@ -752,6 +699,7 @@ class PI_GINOT_Trainer:
         return {
             "loss": total_loss.item(),
             **accum,
+            **mins,
         }
 
     # Single-geometry forward + physics loss
@@ -853,54 +801,6 @@ class PI_GINOT_Trainer:
             loss_dict["L_resultant_log"] = L_resultant.item()
         else:
             loss_dict["L_resultant_log"] = 0.0
-
-
-        # Geometry auxiliary loss (Run 2: latent supervision)
-        w_geom_aux = self.config.get("w_geom_aux", 0.0)
-        if w_geom_aux > 0.0:
-            geometry_latent = loss_dict["geometry_latent"]
-            geom_pred = self.model.predict_geometry(geometry_latent)  # [1, 8]
-
-            # Build target from mesh params (normalised to ~[0,1])
-            p = mesh.params
-            from config import GEOMETRY_RANGES
-            def _norm(val, key):
-                lo, hi = GEOMETRY_RANGES[key]
-                return (val - lo) / (hi - lo + 1e-12)
-
-            holes = p.get("holes", [])
-            has_hole = 1.0 if len(holes) > 0 else 0.0
-            if has_hole > 0:
-                cx, cy, r = holes[0]
-                fi = mesh.fillet_info
-                cx_n = cx / fi["L_half"]
-                cy_n = cy / fi["H_grip"]
-                r_n = (r - 0.6) / (1.5 - 0.6 + 1e-12)  # from HOLE_CONFIG r_range
-            else:
-                cx_n, cy_n, r_n = 0.0, 0.0, 0.0
-
-            target = torch.tensor(
-                [[_norm(p["L_total"], "L_total"),
-                  _norm(p["W_grip"], "W_grip"),
-                  _norm(p["W_gauge"], "W_gauge"),
-                  _norm(p["R_fillet"], "R_fillet"),
-                  has_hole, cx_n, cy_n, r_n]],
-                dtype=torch.float32, device=self.device,
-            )  # [1, 8]
-
-            # MSE on first 4 (shape) + BCE on hole_present + masked MSE on cx,cy,r
-            L_shape = (geom_pred[:, :4] - target[:, :4]).pow(2).mean()
-            L_hole_cls = nn.functional.binary_cross_entropy_with_logits(
-                geom_pred[:, 4], target[:, 4])
-            if has_hole > 0:
-                L_hole_reg = (geom_pred[:, 5:8] - target[:, 5:8]).pow(2).mean()
-            else:
-                L_hole_reg = torch.tensor(0.0, device=self.device)
-            L_geom_aux = L_shape + L_hole_cls + L_hole_reg
-            loss_dict["loss"] = loss_dict["loss"] + w_geom_aux * L_geom_aux
-            loss_dict["L_geom_aux_log"] = L_geom_aux.item()
-        else:
-            loss_dict["L_geom_aux_log"] = 0.0
 
         return loss_dict
 
@@ -1143,8 +1043,7 @@ class PI_GINOT_Trainer:
 
     # Section-force diagnostic (no grad)
     @torch.no_grad()
-    def run_section_force_diagnostic(self, val_idx: int = 0, n_slices: int = 8,
-                                     use_hole_bank: bool = False):
+    def run_section_force_diagnostic(self, val_idx: int = 0, n_slices: int = 8):
         """Compute and print section-mean stress at vertical slices.
 
         For each val geometry, evaluates:
@@ -1155,10 +1054,9 @@ class PI_GINOT_Trainer:
 
         Prints a table comparing gauge vs grip sections.
         """
-        bank = self._val_bank_hole if use_hole_bank else self._val_bank
-        bank_label = "hole" if use_hole_bank else "no-hole"
+        bank = self._val_bank
         if not bank or val_idx >= len(bank):
-            print(f"  [section diagnostic] No {bank_label} val bank — skipping")
+            print("  [section diagnostic] No val bank — skipping")
             return
 
         self.model.eval()
@@ -1176,8 +1074,7 @@ class PI_GINOT_Trainer:
         # Encode geometry (deterministic for val bank)
         bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
                            device=self.device).unsqueeze(0)
-        sid_offset = 200 if use_hole_bank else 100
-        v_sid = torch.tensor([sid_offset + val_idx], dtype=torch.long, device=self.device)
+        v_sid = torch.tensor([100 + val_idx], dtype=torch.long, device=self.device)
         z = self.model.encode(bpc, x_m, y_m, sample_ids=v_sid)
 
         baseline_grad = u_max / L_half
@@ -1357,14 +1254,6 @@ class PI_GINOT_Trainer:
                                      device=self.device)
                 results.append(self._evaluate_single_geometry(
                     mesh, coll, mu, lam, state, sample_ids=v_sid))
-            if hasattr(self, "_val_bank_hole") and self._val_bank_hole:
-                n_hole = min(2, len(self._val_bank_hole))
-                for i in range(n_hole):
-                    mesh, coll = self._val_bank_hole[i]
-                    v_sid = torch.tensor([200 + i], dtype=torch.long,
-                                         device=self.device)
-                    results.append(self._evaluate_single_geometry(
-                        mesh, coll, mu, lam, state, sample_ids=v_sid))
         else:
             for _ in range(batch_size):
                 params = sample_geometry_params(
@@ -1601,7 +1490,11 @@ class PI_GINOT_Trainer:
     def load_checkpoint(self, path: str):
         """Resume training from a checkpoint."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state_dict"])
+        state, dropped = PI_GINOT.strip_legacy_keys(ckpt["model_state_dict"])
+        if dropped:
+            print(f"  Dropped {len(dropped)} legacy key(s) from checkpoint "
+                  f"(removed submodules): {sorted({k.split('.')[0] for k in dropped})}")
+        self.model.load_state_dict(state)
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         self.loss_fn.load_state_dict(ckpt["loss_fn_state_dict"])

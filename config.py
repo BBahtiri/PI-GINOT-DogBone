@@ -18,9 +18,10 @@ Unit system (consistent with PINN-DogBone):
 Stress formulation:
     The physics engine uses 1st Piola–Kirchhoff stress P in the reference
     configuration.  Equilibrium: Div(P) = 0.  Traction: P · N = 0.
-    Current setting: plane strain (F33 = 1).  For a thin tensile specimen,
-    plane stress may be more appropriate — this would require solving for
-    F33 such that P33 = 0 (not yet implemented).
+    Current setting: plane stress.  F33 is solved from P33 = 0 by a Newton
+    closure (physics/neo_hookean.solve_F33_plane_stress) and the 3D
+    determinant J3D = J2D·F33 enters the log term.  Set
+    MATERIAL_CONFIG["state"] = "plane strain" for the F33 = 1 formulation.
 
 Topology:
     No-hole single-topology operator.  Holes are permanently disabled.
@@ -72,7 +73,6 @@ MATERIAL_CONFIG["lam"] = (_E * _nu) / ((1.0 + _nu) * (1.0 - 2.0 * _nu))
 # Nondimensionalization scales
 NONDIM_SCALES = {
     "L0": 50.0,                     # [mm]  Characteristic length
-    "U0": 1.0,                      # [mm]  Characteristic displacement (= u_max)
     "S0": MATERIAL_CONFIG["E"],     # [MPa] Characteristic stress (= E)
 }
 
@@ -126,8 +126,6 @@ COLLOCATION_CONFIG = {
     "n_boundary_per_segment": 400,  # Boundary points per segment (5 segs * 400 = 2000 pool)
     "n_boundary_pc": 320,           # Boundary point cloud size for encoder
     "n_total_boundary": 1600,       # Total boundary points for physics loss
-    "mesh_size": 1.0,               # [mm] stale (no gmsh)
-    "mesh_size_fine": 0.5,          # [mm] stale (no gmsh)
 }
 
 # Coordinate normalization
