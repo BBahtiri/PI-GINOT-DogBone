@@ -91,19 +91,29 @@ def equilibrium_residual(
 
     ones = torch.ones_like(P11)
 
+    def _dP(component):
+        """d(component)/d(query_pts), with the constant-stress case handled.
+
+        allow_unused covers a stress component that genuinely does not depend
+        on position — an affine displacement field, i.e. the finite-strain
+        patch test.  Its derivative is zero, and returning zero is the correct
+        answer rather than a RuntimeError.  A trained network never produces a
+        spatially constant field, so this branch does not fire during training.
+        """
+        if not component.requires_grad:
+            # Constant stress: no graph at all, so autograd would refuse.
+            return torch.zeros_like(query_pts)
+        g = torch.autograd.grad(
+            component, query_pts, ones, create_graph=create_graph,
+            retain_graph=True, allow_unused=True,
+        )[0]
+        return torch.zeros_like(query_pts) if g is None else g
+
     # P is NOT symmetric → need 4 separate grad calls
-    dP11 = torch.autograd.grad(
-        P11, query_pts, ones, create_graph=create_graph, retain_graph=True
-    )[0]  # [B, N, 2]
-    dP12 = torch.autograd.grad(
-        P12, query_pts, ones, create_graph=create_graph, retain_graph=True
-    )[0]
-    dP21 = torch.autograd.grad(
-        P21, query_pts, ones, create_graph=create_graph, retain_graph=True
-    )[0]
-    dP22 = torch.autograd.grad(
-        P22, query_pts, ones, create_graph=create_graph, retain_graph=True
-    )[0]
+    dP11 = _dP(P11)   # [B, N, 2]
+    dP12 = _dP(P12)
+    dP21 = _dP(P21)
+    dP22 = _dP(P22)
 
     # Div(P)_i = ∂P_{iJ}/∂X_J
     f_x = dP11[..., 0:1] + dP12[..., 1:2]   # ∂P11/∂X + ∂P12/∂Y
