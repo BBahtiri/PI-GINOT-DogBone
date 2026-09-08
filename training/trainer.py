@@ -381,8 +381,11 @@ class PI_GINOT_Trainer:
             self.history["L_trac_hole"].append(batch_loss["L_trac_hole"])
             self.history["L_part"].append(batch_loss["L_part"])
             self.history["L_barrier"].append(batch_loss["L_barrier"])
+            # _train_one_epoch returns the batch-mean under "L_resultant";
+            # "L_resultant_log" is the per-geometry key and never appears here,
+            # so this channel logged a constant 0.0 for every run to date.
             self.history["L_resultant"].append(
-                batch_loss.get("L_resultant_log", 0.0))
+                batch_loss.get("L_resultant", 0.0))
             self.history.setdefault("min_J2D", []).append(
                 batch_loss.get("min_J2D", float("nan")))
             self.history.setdefault("min_J3D", []).append(

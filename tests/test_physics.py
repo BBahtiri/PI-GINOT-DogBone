@@ -467,3 +467,27 @@ def test_set_deterministic_leaves_the_model_usable():
         assert torch.isfinite(z).all()
     finally:
         torch.use_deterministic_algorithms(False)
+
+
+def test_epoch_history_keys_match_the_epoch_summary():
+    """Every history channel must read a key _train_one_epoch actually returns.
+
+    history["L_resultant"] read "L_resultant_log", which _train_one_epoch does
+    not return, so the section-resultant curve was a flat zero in every run --
+    on the one term the force-balance argument rests on.
+    """
+    import inspect
+    import re
+
+    from training import trainer as trainer_mod
+
+    # accum and mins are expanded into the return dict with **, so every
+    # string key literal in the method is a key the caller can read.
+    src = inspect.getsource(trainer_mod.PI_GINOT_Trainer._train_one_epoch)
+    returned = set(re.findall(r'"(\w+)":', src))
+
+    fit_src = inspect.getsource(trainer_mod.PI_GINOT_Trainer.fit)
+    read = set(re.findall(r'batch_loss(?:\.get)?[\[\(]"(\w+)"', fit_src))
+
+    missing = sorted(k for k in read if k not in returned)
+    assert not missing, f"fit() reads keys _train_one_epoch never returns: {missing}"
