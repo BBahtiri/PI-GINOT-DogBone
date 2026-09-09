@@ -133,6 +133,26 @@ ARMS = {
         "energy", {"w_resultant_abs_energy": 3.0,
                    "resultant_anchor": "series_calibrated"}, {},
         "absolute anchor dominant — the other end of the useful range"),
+    # Phase 3: the traction-free residual restored to the energy form.
+    #
+    # Redundant at the exact minimiser -- it is a natural BC of Pi, and
+    # test_energy_traction_terms_vanish_on_the_exact_solution checks that on
+    # the reference -- so it cannot bias the converged answer.  What it changes
+    # is the approach, in the direction the objective is 183x flatter
+    # (docs/phase3_transverse_conditioning.md).
+    #
+    # The weight is swept around 183 rather than guessed: at w = 1 the term is
+    # ~30% of the reducible energy, and equalising the transverse curvature
+    # with the axial one needs roughly the curvature ratio.
+    "energy-trac-10": (
+        "energy", {"energy_w_trac_top": 10.0}, {},
+        "gauge-top traction restored, an order below the predicted weight"),
+    "energy-trac-100": (
+        "energy", {"energy_w_trac_top": 100.0}, {},
+        "gauge-top traction at ~the measured curvature ratio"),
+    "energy-trac-1000": (
+        "energy", {"energy_w_trac_top": 1000.0}, {},
+        "gauge-top traction an order above — expected to trade energy for it"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "

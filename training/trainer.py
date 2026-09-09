@@ -589,7 +589,10 @@ class PI_GINOT_Trainer:
             with torch.enable_grad():
                 if self._energy_form:
                     ld = self.loss_fn(self.model, mesh.params, bpc, u_d, x_m,
-                                      y_m, sample_ids=v_sid)
+                                      y_m, sample_ids=v_sid,
+                                      trac_free_pts=tf_pts,
+                                      trac_free_normals=tf_norms,
+                                      trac_free_tags=tf_tags)
                 else:
                     ld = self.loss_fn(
                         self.model, interior, tf_pts, tf_norms, tf_tags,
@@ -853,9 +856,14 @@ class PI_GINOT_Trainer:
             # vanishes and this single term replaces L_eq, L_trac_* and
             # L_part -- the traction conditions become natural BCs of the
             # minimum.  See docs/phase2_energy_form.md.
+            # The traction points are passed whether or not the loss uses
+            # them: EnergyLoss ignores them at zero weight, and threading them
+            # conditionally is how the two branches drift apart.
             loss_dict = self.loss_fn(
                 self.model, mesh.params, bpc, u_delta, x_max, y_max,
                 sample_ids=sample_ids,
+                trac_free_pts=tf_pts, trac_free_normals=tf_norms,
+                trac_free_tags=tf_tags,
             )
             # Keep the log keys the epoch summary expects.
             for k in ("L_eq", "L_trac_top", "L_trac_arc", "L_trac_hole",

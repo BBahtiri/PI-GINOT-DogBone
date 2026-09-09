@@ -85,7 +85,10 @@ def _build_loss(form: str, c: dict):
             mu=MU, lam=LAM, stress_state=STATE,
             n_elem_target=c["energy_n_elem"], resample=True,
             w_barrier=c["w_barrier"], j_min=c["barrier_delta"],
-            E_scale=NONDIM_SCALES["S0"])
+            E_scale=NONDIM_SCALES["S0"],
+            w_trac_top=c.get("energy_w_trac_top", 0.0),
+            w_trac_arc=c.get("energy_w_trac_arc", 0.0),
+            S0=NONDIM_SCALES["S0"])
     return PhysicsLoss(
         mu=MU, lam=LAM, w_equilibrium=c["w_equilibrium"],
         w_trac_top=c["w_trac_top"], w_trac_arc=c["w_trac_arc"],

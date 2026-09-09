@@ -190,6 +190,18 @@ TRAINING_CONFIG = {
                                     # a fixed rule collapses (Pi/Pi_ref -> 0.007
                                     # while the field gets 3x worse)
     "energy_n_per_elem": 3,         # stratified samples per triangle
+    # Traction-free residuals under the ENERGY form.  These are redundant at
+    # the exact minimiser -- Pi's natural BCs are exactly P.N = 0 on these
+    # segments -- so they cannot bias the converged answer.  What they change
+    # is the approach.  docs/phase3_transverse_conditioning.md measures the
+    # same relative field error costing 183x more energy in the axial
+    # direction than the transverse one, so the transverse component sits in
+    # the objective's near-null space and "satisfied at the minimum" never
+    # arrives.  The gauge-top term is the one Phase 1 identified as the only
+    # carrier of transverse information.  0.0 = off, i.e. the energy form
+    # exactly as Phase 2 measured it.
+    "energy_w_trac_top": 0.0,
+    "energy_w_trac_arc": 0.0,
     # Section anchor under the energy form.  This is a WEIGHT, not a gate: the
     # energy loss is O(5e-4) nondimensional against a penalty loss of O(1), so
     # sharing `w_resultant` (10.0) would make the anchor dominate by orders of

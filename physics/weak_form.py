@@ -126,7 +126,9 @@ class EnergyLoss(nn.Module):
                  n_elem_target: int = 1400, resample: bool = True,
                  n_per_elem: int = 3, seed: int = 0,
                  w_barrier: float = 1e3, j_min: float = 0.05,
-                 E_scale: float = 760.0):
+                 E_scale: float = 760.0,
+                 w_trac_top: float = 0.0, w_trac_arc: float = 0.0,
+                 S0: float = 100.0):
         super().__init__()
         self.mu = mu
         self.lam = lam
@@ -140,6 +142,21 @@ class EnergyLoss(nn.Module):
         self.j_min = j_min
         self.E_scale = E_scale
         self.register_buffer("w_bar", torch.tensor(float(w_barrier)))
+        # Traction-free residuals, redundant at the exact minimiser.
+        #
+        # Phase 2's argument was that these are *natural* BCs of the energy
+        # form -- satisfied at the minimum rather than fought for by weights --
+        # and that is true.  It is also insufficient.  A natural BC is only
+        # free if the optimiser reaches the minimum, and the transverse
+        # direction has 183x less curvature than the axial one
+        # (docs/phase3_transverse_conditioning.md), so it does not.  These
+        # terms cannot bias the converged answer, because they vanish there;
+        # what they change is the approach, in the one direction the energy
+        # barely constrains.  Default 0.0, so the energy form as measured in
+        # Phase 2 is unchanged unless asked for.
+        self.register_buffer("w_trac_top", torch.tensor(float(w_trac_top)))
+        self.register_buffer("w_trac_arc", torch.tensor(float(w_trac_arc)))
+        self.S0 = S0
         self._quad_cache = {}
 
     # ------------------------------------------------------------------
@@ -224,8 +241,26 @@ class EnergyLoss(nn.Module):
         return Pi, J2D, J3D, area
 
     # ------------------------------------------------------------------
+    def _traction_terms(self, model, geometry_latent, u_delta, x_max, y_max,
+                        pts, normals, tags):
+        """Mean squared nondimensional traction residual, split gauge-top/arc."""
+        zero = torch.zeros((), device=u_delta.device if
+                           torch.is_tensor(u_delta) else None)
+        if pts is None or pts.shape[1] == 0:
+            return zero, zero
+        from physics.equilibrium import traction_residual_full
+        tx, ty, _, _ = traction_residual_full(
+            model, pts, normals, geometry_latent, u_delta, x_max,
+            self.mu, self.lam, y_max, self.stress_state, return_J3D=True)
+        res = ((tx / self.S0) ** 2 + (ty / self.S0) ** 2).squeeze(-1)
+        top, arc = (tags == 0), (tags == 1)
+        return (res[:, top].mean() if top.any() else zero,
+                res[:, arc].mean() if arc.any() else zero)
+
     def forward(self, model, params: dict, boundary_pc, u_delta, x_max,
-                y_max=None, sample_ids=None, geometry_latent=None) -> dict:
+                y_max=None, sample_ids=None, geometry_latent=None,
+                trac_free_pts=None, trac_free_normals=None,
+                trac_free_tags=None) -> dict:
         """Energy loss for one geometry.
 
         ``params`` selects the cached quadrature mesh; ``boundary_pc`` is the
@@ -244,12 +279,24 @@ class EnergyLoss(nn.Module):
         J_guard = torch.minimum(J2D, J3D)
         L_barrier = torch.mean(torch.relu(self.j_min - J_guard) ** 2)
 
-        loss = L_energy + self.w_bar * L_barrier
+        if self.w_trac_top > 0.0 or self.w_trac_arc > 0.0:
+            L_trac_top, L_trac_arc = self._traction_terms(
+                model, geometry_latent, u_delta, x_max, y_max,
+                trac_free_pts, trac_free_normals, trac_free_tags)
+        else:
+            L_trac_top = L_trac_arc = torch.zeros((), device=L_energy.device)
+
+        loss = (L_energy + self.w_bar * L_barrier
+                + self.w_trac_top * L_trac_top + self.w_trac_arc * L_trac_arc)
         return {
             "loss": loss,
             "geometry_latent": geometry_latent,
             "L_energy": L_energy,
             "L_barrier": L_barrier,
+            "L_trac_top": L_trac_top,
+            "L_trac_arc": L_trac_arc,
+            "L_trac_top_log": float(L_trac_top.detach()),
+            "L_trac_arc_log": float(L_trac_arc.detach()),
             "Pi": Pi,
             "Pi_log": float(Pi.detach()),
             "L_energy_log": float(L_energy.detach()),

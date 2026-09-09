@@ -183,6 +183,9 @@ def main():
             w_barrier=config["w_barrier"],
             j_min=config["barrier_delta"],
             E_scale=NONDIM_SCALES["S0"],
+            w_trac_top=config.get("energy_w_trac_top", 0.0),
+            w_trac_arc=config.get("energy_w_trac_arc", 0.0),
+            S0=NONDIM_SCALES["S0"],
         )
     elif loss_form == "penalty":
         loss_fn = PhysicsLoss(

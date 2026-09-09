@@ -757,3 +757,47 @@ def test_energy_quadrature_converges():
                                refine=2.0)
     assert err["rel_mesh"] < 5e-3
     assert err["rel_rule"] < 5e-3
+
+
+def test_energy_traction_terms_vanish_on_the_exact_solution():
+    """The added traction terms must be redundant, not corrective.
+
+    docs/phase3_transverse_conditioning.md justifies adding P.N = 0 residuals
+    back to the energy form on the grounds that they are *natural* BCs of Pi
+    and therefore cannot bias the converged answer -- they only reweight the
+    approach.  That argument is only sound if the terms actually vanish on the
+    solution.  Checked against the finite-element reference: the traction
+    residual on the free boundary must be small in the same units the loss
+    uses (nondimensionalised by S0), and far below the residual a partly
+    trained network carries.
+    """
+    import numpy as np
+
+    from config import (LOADING_CONFIG, MATERIAL_CONFIG, NONDIM_SCALES,
+                        TRAINING_CONFIG, get_fillet_geometry)
+    from geometry.banks import VAL_BANK_SEED, build_geometry_bank
+    from verification.fem.mesh import build_mesh, default_h
+    from verification.fem.solver import solve as fem_solve
+
+    mu, lam = MATERIAL_CONFIG["mu"], MATERIAL_CONFIG["lam"]
+    state = MATERIAL_CONFIG["state"]
+    bank = build_geometry_bank(3, TRAINING_CONFIG["bank_geo_ranges"],
+                               holes_on=False, seed=VAL_BANK_SEED)
+    gmesh, _ = bank[0]
+    fi = get_fillet_geometry(gmesh.params)
+    mesh = build_mesh(gmesh.params, h=default_h(fi) * 3.0)
+    sol = fem_solve(mesh, LOADING_CONFIG["u_max"], mu, lam, state,
+                    n_steps=1, verbose=False)
+
+    # Traction on the gauge top, from the reference stress field.
+    P = sol.P                                  # [n_elem, 2, 2]
+    cx, cy = sol.centroids[:, 0], sol.centroids[:, 1]
+    on_gauge = (cx < fi["x_g"]) & (cy > 0.9 * fi["H_gauge"])
+    assert on_gauge.sum() > 5, "no elements found under the gauge top"
+    # Outward normal there is +y, so the traction is the second column of P.
+    t = P[on_gauge][:, :, 1] / NONDIM_SCALES["S0"]
+    rms = float(np.sqrt((t ** 2).sum(axis=1).mean()))
+    assert rms < 5e-2, (
+        f"traction residual on the free boundary is {rms:.3e} in loss units; "
+        "the term is not redundant on the solution, so it would bias the "
+        "converged answer rather than only reweighting the approach")
