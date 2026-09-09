@@ -170,6 +170,15 @@ TRAINING_CONFIG = {
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline
     "w_trac_top": 2.0,              # Reduced: equilibrium + resultant should drive learning
+                                    # NOTE: this is the only term that sets the
+                                    # lateral contraction (P.N=0 on gauge_top
+                                    # means P22=P12=0), and it is the lowest
+                                    # weight here -- 50x below w_equilibrium.
+                                    # Raising it to 100 cuts the transverse
+                                    # displacement error 2.4x on val[0] with no
+                                    # axial cost. Not changed by default: the
+                                    # evidence is one geometry. See
+                                    # docs/phase1_transverse_study.md.
     "w_trac_arc": 20.0,             # Reduced: was over-weighting local arc at expense of global balance
     "w_traction_partial": 2.0,      # Reduced for same reason
     "w_barrier": 1e3,               # detF barrier weight (strong during warmup)

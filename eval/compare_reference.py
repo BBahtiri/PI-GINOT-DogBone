@@ -158,10 +158,20 @@ def _errors(pred, ref, mask, weights=None, scale=None):
 
 def compare_one(model, params: dict, u_delta: float, h: float,
                 device: str = "cpu", sample_id: int = 700,
-                verbose: bool = False, coll=None) -> dict:
-    """Compare the operator against the FEM reference on one geometry."""
-    mesh = build_mesh(params, h=h)
-    sol = fem_solve(mesh, u_delta, MU, LAM, STATE, n_steps=1, verbose=verbose)
+                verbose: bool = False, coll=None, sol=None) -> dict:
+    """Compare the operator against the FEM reference on one geometry.
+
+    ``sol`` lets a caller reuse a previously computed reference, which matters
+    when the same geometry is evaluated repeatedly (e.g. tracking a training
+    run) -- the reference does not change, so re-solving it would be pure
+    waste and would risk comparing against a slightly different mesh.
+    """
+    if sol is None:
+        mesh = build_mesh(params, h=h)
+        sol = fem_solve(mesh, u_delta, MU, LAM, STATE, n_steps=1,
+                        verbose=verbose)
+    else:
+        mesh = sol.mesh
     fi = mesh.fillet_info
 
     cent = sol.centroids

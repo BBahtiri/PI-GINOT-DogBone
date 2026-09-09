@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Why is the transverse field not learned?
+
+Case 1.4 established *that* the operator learns the axial response and not the
+transverse one: v carries a 168% relative L2 error against the finite-element
+reference, and sigma_22 is 30% of the peak stress on faces where it should be
+zero. This driver asks *why*, because the three candidate explanations imply
+completely different fixes:
+
+  A. Optimisation / capacity allocation across geometries.  The loss can drive
+     v -- the level-2 uniaxial driver got it to 2.5e-04 on a prismatic bar in
+     4000 epochs -- but in the 128-geometry operator setting each specimen is
+     seen only about 94 times, and the transverse correction may simply lose
+     to the axial one. Fix: more training, or rebalancing across geometries.
+
+  B. Loss weighting.  The traction-free condition on the gauge top is the
+     *only* term that sets the lateral contraction there: with N = (0,1),
+     P.N = 0 means P22 = P12 = 0. Its weight is w_trac_top = 2.0 -- the lowest
+     in the config, and 50x below w_equilibrium = 100. Fix: reweight.
+
+  C. Architecture.  The hard boundary condition is v = (y/H_grip) * phi_v.
+     A constant phi_v gives v linear in y and independent of x, which is right
+     in the gauge but wrong across the taper, where the true field is
+     v ~ -nu * eps(x) * y. If the decoder cannot express the required
+     x-dependence, no amount of training or reweighting helps. Fix: change
+     the ansatz.
+
+The experiment separates them. Fine-tuning the shipped checkpoint on a *single*
+geometry removes the multi-geometry allocation problem entirely:
+
+  - if v converges with the shipped weights, the cause is A;
+  - if it converges only once w_trac_top is raised, the cause is B;
+  - if it does not converge either way, the cause is C.
+
+A fresh-initialisation run on the same geometry is the control.
+
+Usage
+-----
+    python -m verification.transverse_study --runs shipped,reweighted,fresh
+    python -m verification.transverse_study --geo 0 --epochs 800
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+
+import numpy as np
+import torch
+
+from config import (DECODER_CONFIG, ENCODER_CONFIG, LOADING_CONFIG,
+                    MATERIAL_CONFIG, NONDIM_SCALES, TRAINING_CONFIG,
+                    get_fillet_geometry)
+from eval.compare_reference import compare_one
+from geometry.banks import VAL_BANK_SEED, build_geometry_bank
+from models.pi_ginot import PI_GINOT
+from physics.losses import PhysicsLoss
+from training.manifest import set_deterministic, write_manifest
+from verification.fem.mesh import build_mesh, default_h
+from verification.fem.solver import solve as fem_solve
+
+MU = MATERIAL_CONFIG["mu"]
+LAM = MATERIAL_CONFIG["lam"]
+STATE = MATERIAL_CONFIG["state"]
+
+# Loss-weight sets under test.  'shipped' is config.py verbatim.
+WEIGHT_SETS = {
+    "shipped": {},
+    "reweighted": {"w_trac_top": 100.0, "w_traction_partial": 20.0},
+}
+
+
+def _tensors(coll, device, u_delta, sample_id):
+    def T(a):
+        return torch.tensor(a, dtype=torch.float32,
+                            device=device).unsqueeze(0)
+    return dict(
+        interior=T(coll.interior_pts).requires_grad_(True),
+        tf_pts=T(coll.traction_free_pts).requires_grad_(True),
+        tf_norms=T(coll.traction_free_normals),
+        tf_tags=torch.tensor(coll.traction_free_tags, dtype=torch.long,
+                             device=device),
+        pt_pts=T(coll.partial_traction_pts).requires_grad_(True),
+        pt_norms=T(coll.partial_traction_normals),
+        pt_dirs=torch.tensor(coll.partial_traction_dirs, dtype=torch.long,
+                             device=device),
+        bpc=T(coll.boundary_pc),
+        u_d=torch.tensor([u_delta], dtype=torch.float32, device=device),
+        x_m=torch.tensor([coll.x_max], dtype=torch.float32, device=device),
+        y_m=torch.tensor([coll.y_max], dtype=torch.float32, device=device),
+        sid=torch.tensor([sample_id], dtype=torch.long, device=device),
+    )
+
+
+def _make_loss(overrides, device):
+    c = dict(TRAINING_CONFIG)
+    c.update(overrides)
+    return PhysicsLoss(
+        mu=MU, lam=LAM,
+        w_equilibrium=c["w_equilibrium"], w_trac_top=c["w_trac_top"],
+        w_trac_arc=c["w_trac_arc"], w_traction_partial=c["w_traction_partial"],
+        w_barrier=c["w_barrier"], j_min=c["barrier_delta"],
+        L0=NONDIM_SCALES["L0"], S0=NONDIM_SCALES["S0"], stress_state=STATE,
+    ).to(device), c
+
+
+def run_one(name: str, params: dict, coll, sol, checkpoint, epochs: int,
+            lr: float, device: str, sample_id: int, track_every: int,
+            seed: int = 0) -> dict:
+    """Fine-tune (or train) on one geometry, tracking error against the FEM."""
+    set_deterministic(seed)
+    overrides = WEIGHT_SETS[name] if name in WEIGHT_SETS else {}
+    from_scratch = name == "fresh"
+
+    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
+    if not from_scratch:
+        ck = torch.load(checkpoint, map_location=device, weights_only=False)
+        model.load_state_dict(
+            PI_GINOT.strip_legacy_keys(ck["model_state_dict"])[0])
+
+    loss_fn, cfg = _make_loss(overrides, device)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    u_delta = LOADING_CONFIG["u_max"]
+    t = _tensors(coll, device, u_delta, sample_id)
+
+    def measure():
+        return compare_one(model, params, u_delta, None, device,
+                           sample_id=sample_id, coll=coll, sol=sol)
+
+    hist = []
+    m = measure()
+    hist.append({"epoch": 0, "u": m["disp_u_rel_L2"], "v": m["disp_v_rel_L2"],
+                 "vm": m["vm_all"]["rel_L2"],
+                 "s22": m["s22_all"]["rms_over_scale"],
+                 "N_err": m["N_rel_err"], "loss": None})
+    t0 = time.time()
+    for epoch in range(1, epochs + 1):
+        model.train()
+        opt.zero_grad()
+        ld = loss_fn(model, t["interior"], t["tf_pts"], t["tf_norms"],
+                     t["tf_tags"], t["pt_pts"], t["pt_norms"], t["pt_dirs"],
+                     t["bpc"], t["u_d"], t["x_m"], t["y_m"],
+                     sample_ids=t["sid"])
+        ld["loss"].backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                       cfg["grad_clip_norm"])
+        opt.step()
+        if epoch % track_every == 0 or epoch == epochs:
+            m = measure()
+            hist.append({"epoch": epoch, "u": m["disp_u_rel_L2"],
+                         "v": m["disp_v_rel_L2"], "vm": m["vm_all"]["rel_L2"],
+                         "s22": m["s22_all"]["rms_over_scale"],
+                         "N_err": m["N_rel_err"],
+                         "loss": float(ld["loss"].item())})
+            h = hist[-1]
+            print(f"    [{name}] epoch {epoch:5d}  loss={h['loss']:.3e}  "
+                  f"u={h['u']:.3e}  v={h['v']:.3e}  vm={h['vm']:.3e}  "
+                  f"s22={h['s22']:.3e}  N={100 * h['N_err']:+.1f}%  "
+                  f"[{time.time() - t0:.0f}s]", flush=True)
+    return {"name": name, "overrides": overrides, "history": hist,
+            "wall_s": time.time() - t0}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--geo", type=int, default=0,
+                    help="validation-bank index (0 is the worst in case 1.4)")
+    ap.add_argument("--runs", default="shipped,reweighted,fresh")
+    ap.add_argument("--epochs", type=int, default=600)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--track-every", type=int, default=50)
+    ap.add_argument("--checkpoint", default="checkpoints/best.pt")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
+                    else "cpu")
+    ap.add_argument("--ref-h-factor", type=float, default=2.5,
+                    help="reference element size relative to default_h; the "
+                         "tracked errors are insensitive to this (v 5.28 vs "
+                         "5.40, vm 0.6995 vs 0.6994 between 1.0 and 2.5) and "
+                         "it makes tracking 17x cheaper")
+    ap.add_argument("--n-interior", type=int, default=1200)
+    ap.add_argument("--out", default="verification/results/transverse")
+    args = ap.parse_args()
+
+    os.makedirs(args.out, exist_ok=True)
+    write_manifest(args.out, __import__("config"),
+                   extra={"case": "transverse_study", "args": vars(args)})
+
+    bank = build_geometry_bank(TRAINING_CONFIG["bank_val_size"],
+                               TRAINING_CONFIG["bank_geo_ranges"],
+                               holes_on=False, seed=VAL_BANK_SEED)
+    gmesh, coll = bank[args.geo]
+    params = gmesh.params
+    fi = get_fillet_geometry(params)
+
+    # Thin the collocation set: this study asks whether the transverse field is
+    # learnable on one geometry, not what the production budget achieves.
+    if args.n_interior and args.n_interior < len(coll.interior_pts):
+        rng = np.random.default_rng(0)
+        idx = rng.choice(len(coll.interior_pts), args.n_interior,
+                         replace=False)
+        coll.interior_pts = coll.interior_pts[idx]
+
+    print("Transverse-field study — one geometry, allocation removed")
+    print("=" * 78)
+    print(f"  val[{args.geo}]  L={params['L_total']:.1f} "
+          f"W_grip={params['W_grip']:.1f} W_gauge={params['W_gauge']:.1f} "
+          f"R={params['R_fillet']:.1f}   "
+          f"taper W_gauge/W_grip = {params['W_gauge'] / params['W_grip']:.2f}")
+    print(f"  {args.epochs} epochs, Adam {args.lr}, device {args.device}")
+
+    print("\n  solving the finite-element reference once...", flush=True)
+    fmesh = build_mesh(params, h=default_h(fi) * args.ref_h_factor)
+    sol = fem_solve(fmesh, LOADING_CONFIG["u_max"], MU, LAM, STATE,
+                    n_steps=1, verbose=False)
+    print(f"  reference: {fmesh.n_elem} elements, "
+          f"{sol.n_newton} Newton iterations\n")
+
+    results = []
+    for name in args.runs.split(","):
+        name = name.strip()
+        print(f"  --- {name} "
+              f"({WEIGHT_SETS.get(name, {}) or 'config weights'}"
+              f"{', fresh init' if name == 'fresh' else ''}) ---")
+        results.append(run_one(name, params, coll, sol, args.checkpoint,
+                               args.epochs, args.lr, args.device,
+                               sample_id=100 + args.geo,
+                               track_every=args.track_every))
+
+    print("\n" + "=" * 78)
+    print(f"{'run':>12}{'u rel L2':>12}{'v rel L2':>12}{'vm rel L2':>12}"
+          f"{'s22/peak':>12}{'N err':>10}")
+    print("-" * 70)
+    for r in results:
+        a, b = r["history"][0], r["history"][-1]
+        print(f"{r['name'] + ' start':>12}{a['u']:>12.3e}{a['v']:>12.3e}"
+              f"{a['vm']:>12.3e}{a['s22']:>12.3e}"
+              f"{100 * a['N_err']:>9.1f}%")
+        print(f"{r['name'] + ' end':>12}{b['u']:>12.3e}{b['v']:>12.3e}"
+              f"{b['vm']:>12.3e}{b['s22']:>12.3e}"
+              f"{100 * b['N_err']:>9.1f}%")
+    path = os.path.join(args.out, f"geo{args.geo}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=2, default=float)
+    print(f"\nWrote {path}")
+
+
+if __name__ == "__main__":
+    main()
