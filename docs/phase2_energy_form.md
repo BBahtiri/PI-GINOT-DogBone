@@ -144,18 +144,77 @@ Mises 3.3–8.9× on every geometry. The section-force error drops from
 0.8–13.2% to at most 0.5%, and Π sits within 0.4% of the reference — the model
 is essentially *at* the energy minimum.
 
-**The transverse improvement is real but bounded, and where it stops is
-informative.** v improves 3.7–4.0× on the two tapered geometries but not at
-all on the mildest one (0.150 against 0.149). The energy form removes the
-weighting cause entirely, so what remains at low taper is the architectural
-limit — hypothesis C from the Phase 1 study, now isolated rather than
-conjectured. The hard-BC ansatz `v = (y/H_grip)·φ_v` is the thing to attack
-next, not the loss.
+**The transverse improvement is real, and at 300 epochs it looks bounded** —
+v improves 3.7–4.0× on the two tapered geometries but not at all on the
+mildest one (0.150 against 0.149). That reading was wrong; see the next
+section.
 
 **Raising `w_trac_top` is superseded.** It was the cheapest fix available
 within the penalty formulation; the energy form is better on every metric and
 cheaper. The reweighting row stays in the ablation matrix as the penalty-form
 control, not as a recommendation.
+
+---
+
+## Correction: the transverse field is slow, not stuck
+
+The 300-epoch table above says the transverse error plateaus, and the first
+reading of it — recorded here and in the project notes — was that the residual
+error is architectural, and that the hard-BC ansatz `v = (y/H_grip)·φ_v` was
+the thing to attack next.
+
+**That was wrong.** Two checks refuted it.
+
+*First*, normalising the transverse error by a common displacement scale
+rather than by ‖v_ref‖ (which is small — ‖v‖/‖u‖ is 0.03–0.06) shows the
+energy form does reduce it in absolute terms on the tapered geometries, and
+that it had become the *dominant* displacement error: 6.7e-03 against an axial
+2.0e-03 on geometry 11.
+
+*Second*, and decisively: the 300-epoch runs were simply not converged. The
+transverse field converges roughly 5× slower than the axial one, so a budget
+tuned to the axial field stops while the transverse field is still moving.
+Running to 2500 epochs, on the same two geometries:
+
+| geo | epoch | u rel L2 | **v rel L2** | vm rel L2 | σ₂₂/peak | N err | Π/Π_ref−1 |
+|---|---|---|---|---|---|---|---|
+| 0 (taper 0.28) | 250 | 3.26e-03 | 2.59e-01 | 3.78e-02 | 2.93e-02 | −1.4% | +0.3% |
+| | 500 | 1.14e-03 | 5.96e-02 | 2.86e-02 | 1.70e-02 | +1.2% | +0.1% |
+| | 1000 | 5.13e-04 | 3.01e-02 | 1.42e-02 | 8.66e-03 | +0.5% | +0.0% |
+| | 2000 | 5.61e-04 | 1.46e-02 | 1.07e-02 | 5.63e-03 | +0.1% | −0.0% |
+| | **2500** | **9.65e-04** | **2.70e-02** | **1.38e-02** | **5.44e-03** | **+0.5%** | **+0.2%** |
+| 11 (taper 0.78) | 250 | 1.96e-03 | 1.51e-01 | 2.20e-02 | 1.77e-02 | +0.2% | +0.1% |
+| | 500 | 1.25e-03 | 9.12e-02 | 1.57e-02 | 1.32e-02 | +0.1% | +0.0% |
+| | 1000 | 1.16e-03 | 2.06e-02 | 8.27e-03 | 6.39e-03 | +0.0% | +0.0% |
+| | **2500** | **6.10e-04** | **1.07e-02** | **5.97e-03** | **3.70e-03** | **−0.2%** | **−0.0%** |
+
+Geometry 11, the one that appeared stuck at v = 0.150, reaches 0.011 — a
+**14× improvement** that 300 epochs could not see. Against the penalty form on
+the worst geometry (values from the table above, 300 epochs):
+
+| | shipped | wtop=100 | energy @2500 | improvement |
+|---|---|---|---|---|
+| u | 5.33e-02 | 5.47e-02 | **9.65e-04** | **55×** |
+| v | 8.93e-01 | 3.93e-01 | **2.70e-02** | **33×** (15× vs wtop) |
+| von Mises | 3.20e-01 | 3.09e-01 | **1.38e-02** | **23×** |
+| σ₂₂ | 1.06e-01 | 4.51e-02 | **5.44e-03** | **19×** |
+| N error | +10.2% | +13.2% | **+0.5%** | |
+
+Π/Π_ref stays within 0.2% of the reference across all 2500 epochs, so the
+stratified resampling holds — no drift towards collapse over a realistic
+training length.
+
+**What this changes.** The hard-BC ansatz is not the constraint; it was never
+shown to be. What the evidence supports is that the transverse component needs
+either more epochs than the axial one, or a preconditioner / second-order
+refinement stage to close the gap sooner. That is a scheduling question, not
+an architectural one, and it should be settled on the retrained operator
+before any change to the decoder is contemplated.
+
+The general lesson is worth stating plainly: **a plateau observed at a budget
+tuned to the dominant field component is not evidence of a floor.** Both
+earlier conclusions — Phase 1's "raise w_trac_top" and this document's first
+reading — came from stopping at 200–300 epochs.
 
 ---
 
@@ -166,8 +225,9 @@ control, not as a recommendation.
   128-geometry trainer is the next step and is where the remaining risk sits:
   the quadrature mesh is per geometry, so memory and caching behaviour under
   batching are untested.
-- **300 epochs at a diagnostic budget**, on CPU. No claim about the production
-  schedule.
+- **A diagnostic budget on CPU.** The 2500-epoch runs settle the plateau
+  question but say nothing about the production schedule on a 128-geometry
+  bank.
 - **Three geometries.** The taper trend is consistent with Phase 1 but the
   bank-wide numbers need a retrained operator.
 - The **mixed u–P form** (plan step 2.4) is not implemented. On this evidence
