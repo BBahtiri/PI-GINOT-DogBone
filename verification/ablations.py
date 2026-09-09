@@ -116,6 +116,23 @@ ARMS = {
         "energy", {"w_resultant_energy": 1e-4,
                    "resultant_anchor": "series_calibrated"}, {},
         "best sweep weight, but against a target that is not itself biased"),
+    # The corrected absolute-anchor arms.  w_resultant_abs_energy weights the
+    # anchor term directly, so these are the first arms that actually vary the
+    # force LEVEL rather than the slice-to-slice consistency.  Targeting the
+    # anchor at ~10-100% of the reducible energy (~1e-4) with L_anchor ~3e-4
+    # puts the useful range around 0.03-3.
+    "energy-abs-0.03": (
+        "energy", {"w_resultant_abs_energy": 0.03,
+                   "resultant_anchor": "series_calibrated"}, {},
+        "absolute anchor at ~10% of the reducible energy"),
+    "energy-abs-0.3": (
+        "energy", {"w_resultant_abs_energy": 0.3,
+                   "resultant_anchor": "series_calibrated"}, {},
+        "absolute anchor comparable to the reducible energy"),
+    "energy-abs-3": (
+        "energy", {"w_resultant_abs_energy": 3.0,
+                   "resultant_anchor": "series_calibrated"}, {},
+        "absolute anchor dominant — the other end of the useful range"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "

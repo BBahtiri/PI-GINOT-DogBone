@@ -598,29 +598,31 @@ class PI_GINOT_Trainer:
                     )
 
                 # Section-resultant loss (same weighting rule as training)
-                w_res = (float(self.config.get("w_resultant_energy", 0.0))
-                         if self._energy_form
-                         else self.config.get("w_resultant", 0.0))
-                L_res_val = 0.0
-                if w_res > 0.0:
-                    L_res_val = self._compute_section_resultant_loss(
-                        self.model, ld["geometry_latent"], mesh,
-                        u_d, x_m, y_m,
+                w_res, w_abs_v = self._resultant_weights()
+                res_term = 0.0
+                if w_res > 0.0 or (w_abs_v or 0.0) > 0.0:
+                    args = (self.model, ld["geometry_latent"], mesh,
+                            u_d, x_m, y_m)
+                    kw = dict(
                         n_slices=self.config.get("n_resultant_slices", 10),
-                        n_y_pts=self.config.get("n_resultant_y_pts", 64),
-                    ).item()
+                        n_y_pts=self.config.get("n_resultant_y_pts", 64))
+                    if w_abs_v is None:
+                        res_term = w_res * self._compute_section_resultant_loss(
+                            *args, **kw).item()
+                    else:
+                        lc, la = self._compute_section_resultant_loss(
+                            *args, split=True, **kw)
+                        res_term = w_res * lc.item() + w_abs_v * la.item()
 
             if self._energy_form:
                 # The validation figure must be comparable across epochs, not
                 # across formulations: here it is the nondimensional energy
                 # plus the barrier, which is what is being minimised.
-                raw = (ld["L_energy_log"] + ld["L_barrier_log"]
-                       + w_res * L_res_val)
+                raw = (ld["L_energy_log"] + ld["L_barrier_log"] + res_term)
             else:
                 raw = (ld["L_eq_log"] + ld["L_trac_top_log"]
                        + ld["L_trac_arc_log"] + ld["L_trac_hole_log"]
-                       + ld["L_part_log"] + ld["L_barrier_log"]
-                       + w_res * L_res_val)
+                       + ld["L_part_log"] + ld["L_barrier_log"] + res_term)
             raw_total += raw / n
 
         self.model.train()
@@ -874,19 +876,26 @@ class PI_GINOT_Trainer:
         # so one shared number would silently make the anchor orders of
         # magnitude more or less important depending only on the form.
         # Default 0.0 = off, which is what Phase 2 shipped.
-        if self._energy_form:
-            w_resultant = float(self.config.get("w_resultant_energy", 0.0))
-        else:
-            w_resultant = getattr(self, "_w_resultant_eff",
-                                  self.config.get("w_resultant", 0.0))
-        if w_resultant > 0.0:
+        # Under the energy form the two halves get separate weights, because
+        # they differ by ~1000x in magnitude and a single scalar cannot tune
+        # both -- see the `split` docstring below.  The penalty form keeps its
+        # historical single weight so earlier runs stay comparable.
+        w_cons, w_abs = self._resultant_weights()
+        if w_cons > 0.0 or (w_abs or 0.0) > 0.0:
             geometry_latent = loss_dict["geometry_latent"]
-            L_resultant = self._compute_section_resultant_loss(
-                self.model, geometry_latent, mesh, u_delta, x_max, y_max,
-                n_slices=self.config.get("n_resultant_slices", 6),
-                n_y_pts=self.config.get("n_resultant_y_pts", 24),
-            )
-            loss_dict["loss"] = loss_dict["loss"] + w_resultant * L_resultant
+            args = (self.model, geometry_latent, mesh, u_delta, x_max, y_max)
+            kw = dict(n_slices=self.config.get("n_resultant_slices", 6),
+                      n_y_pts=self.config.get("n_resultant_y_pts", 24))
+            if w_abs is None:
+                L_resultant = self._compute_section_resultant_loss(*args, **kw)
+                term = w_cons * L_resultant
+            else:
+                L_resultant, L_anchor = self._compute_section_resultant_loss(
+                    *args, split=True, **kw)
+                term = w_cons * L_resultant + w_abs * L_anchor
+            loss_dict["loss"] = loss_dict["loss"] + term
+            # Logged unweighted, and only the consistency part, so the channel
+            # means the same thing in both formulations.
             loss_dict["L_resultant_log"] = L_resultant.item()
         else:
             loss_dict["L_resultant_log"] = 0.0
@@ -947,6 +956,18 @@ class PI_GINOT_Trainer:
         return intervals
 
     # Section-resultant loss (hole-aware, Run 2)
+    def _resultant_weights(self):
+        """(consistency weight, absolute-anchor weight).
+
+        The second is None for the penalty form, which keeps its historical
+        single weight over the combined term.
+        """
+        if self._energy_form:
+            return (float(self.config.get("w_resultant_energy", 0.0)),
+                    float(self.config.get("w_resultant_abs_energy", 0.0)))
+        return (getattr(self, "_w_resultant_eff",
+                        self.config.get("w_resultant", 0.0)), None)
+
     def _compute_section_resultant_loss(
         self,
         model,
@@ -957,13 +978,26 @@ class PI_GINOT_Trainer:
         y_max: torch.Tensor,
         n_slices: int = 6,
         n_y_pts: int = 32,
+        split: bool = False,
     ) -> torch.Tensor:
         """Compute axial force resultant N(x) at vertical slices.
 
         Hole-aware: integrates P11 only over solid material intervals,
         skipping the void region where a hole intersects the slice.
 
-        Returns loss = Var(N)/mean(N)^2 + 2*adjacent_diff^2.
+        Returns loss = Var(N)/mean(N)^2 + 2*adjacent_diff^2, plus the
+        reaction-consistency and absolute-anchor terms.
+
+        ``split=True`` returns ``(L_consistency, L_anchor)`` instead of their
+        weighted sum.  The two differ by more than two orders of magnitude --
+        the consistency terms start near 0.4 while the anchor term is a
+        squared relative error, ~3e-4 at a 2% miss -- so a single scalar in
+        front of the sum cannot tune both.  Any weight large enough to make
+        the absolute level matter makes the consistency terms dominate the
+        entire loss.  This is not academic: an anchor sweep that varied only
+        the sum appeared to test the absolute anchor and in fact varied the
+        consistency pressure, with the anchor contributing ~0.01% of the
+        signal.  See docs/phase2_operator.md.
         """
         fi = mesh.fillet_info
         L_half = fi["L_half"]
@@ -1050,8 +1084,11 @@ class PI_GINOT_Trainer:
 
         # (b) Absolute anchor against a closed-form reference (prevents
         #     magnitude collapse).  See physics/uniaxial.py: the legacy
-        #     small-strain form undershoots by 5-30% because it ignores the
-        #     varying section, so 'series' is the default.
+        #     small-strain form is 3.60% mean / 10.96% max against the FEM
+        #     reference and 'series' is 2.49% / 5.07%, so 'series' is the
+        #     default.  (The "5-30%" that used to be written here came from
+        #     comparing the anchors to each other rather than to a solved
+        #     reference; see physics/uniaxial.py.)
         anchor_mode = self.config.get("resultant_anchor", "series")
         w_anchor = self.config.get("w_resultant_anchor", 0.5)
         if anchor_mode != "none" and w_anchor > 0.0:
@@ -1059,9 +1096,12 @@ class PI_GINOT_Trainer:
                 mesh, u_delta_val, anchor_mode
             )
             L_anchor = ((N_mean - N_target) / N_target).pow(2)
-            L_resultant = L_resultant + w_anchor * L_anchor
+        else:
+            L_anchor = torch.zeros((), device=self.device)
 
-        return L_resultant
+        if split:
+            return L_resultant, L_anchor
+        return L_resultant + w_anchor * L_anchor
 
     def _resultant_anchor_target(self, mesh, u_delta: float,
                                  mode: str = "series") -> float:

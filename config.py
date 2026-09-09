@@ -200,6 +200,15 @@ TRAINING_CONFIG = {
     # bank the energy form's force error is 3.5% against the penalty form's
     # 2.5%.  Natural BCs are only satisfied AT the minimum.
     "w_resultant_energy": 0.0,
+    # Weight on the ABSOLUTE anchor under the energy form, kept separate from
+    # the consistency weight above because the two terms differ by ~1000x in
+    # magnitude: the consistency terms start near 0.4, the anchor is a squared
+    # relative error (~3e-4 at a 2% miss).  A single scalar over the sum
+    # cannot tune both -- any weight that makes the level matter makes the
+    # consistency terms dominate the whole loss.  The first anchor sweep
+    # (docs/phase2_operator.md) varied only the sum and so appeared to test the
+    # absolute anchor while it contributed ~0.01% of the signal.
+    "w_resultant_abs_energy": 0.0,
 
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline

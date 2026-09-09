@@ -138,18 +138,62 @@ At its best weight the anchor buys **0.5 percentage points** of force error —
 epoch** and a 4% loss on the transverse field. That is not a fix; the
 hypothesis that the anchor would recover the force balance is wrong.
 
-The likely reason is that **the anchor's target is itself biased in the same
-direction as the error.** `resultant_anchor: "series"` runs about 2.5% high
-against the finite-element reference (`physics/uniaxial.py`), so no weight on
-it can pull a +4% error below +2.5% — and the sweep does exactly that, moving
-toward 2.5% and stalling. The direct test is the calibrated target
-(`series_calibrated`, 0.74% mean error) at the sweep's best weight; that arm
-is `energy-anchor-calib`.
+My first explanation was that **the anchor's target is itself biased the same
+way as the error** — `resultant_anchor: "series"` runs ~2.5% high against the
+reference (`physics/uniaxial.py`), so no weight on it could pull a +4% error
+below +2.5%. Swapping in the calibrated target (0.74% mean error) at the
+sweep's best weight tests that directly, and it **also does nothing**: 3.79%
+against 3.70%.
 
-Note also what the sweep costs. The anchor more than doubles the energy form's
-per-epoch time (1.46 → 3.18 s), which is most of its speed advantage over the
-penalty form (7.36 s). An anchor that bought a real fix would still be worth
-it; one that buys half a point is not.
+### The sweep was not testing what I thought it was
+
+Two refuted explanations in a row is a sign the model of the mechanism is
+wrong, so: what does `w_resultant_energy` actually multiply?
+
+`_compute_section_resultant_loss` returns
+
+```
+L_var + 2·L_adj  +  w_reaction·L_reaction  +  w_anchor·L_anchor
+```
+
+and only the last term knows the absolute force level; the first three are
+*consistency* — that N(x) is the same at every slice and matches the grip
+reaction. They do not differ by a little. The consistency terms start near
+**0.4**. `L_anchor` is a squared relative error, so at a 2% miss it is
+**3e-4**, carried behind `w_anchor = 0.5`. Against a reducible energy of
+~1e-4:
+
+| at `w_resultant_energy = 1e-4` | contribution | share of reducible Π |
+|---|---|---|
+| consistency terms | 4e-5 | ~40% |
+| absolute anchor | 1.5e-8 | **~0.015%** |
+
+The sweep varied the consistency pressure by four orders of magnitude and left
+the absolute level untouched. Every row in that table is a real measurement of
+the wrong lever — which is also why swapping the anchor's target changed
+nothing: the term carrying the target was numerically irrelevant either way.
+It even explains the non-monotonicity, since nothing in the sweep was pulling
+the level in a consistent direction.
+
+**A single scalar cannot fix this.** A weight large enough to make the level
+matter (~0.1 on `L_anchor`) puts ~0.08 on the consistency terms, 800× the
+reducible energy. The two need separate weights, which is now what they have:
+`w_resultant_abs_energy` weights the anchor alone, and
+`_compute_section_resultant_loss(split=True)` returns the halves.
+
+### What it costs
+
+The anchor more than doubles the energy form's per-epoch time (1.46 → 3.18 s),
+which is most of its speed advantage over the penalty form (7.36 s). An anchor
+that bought a real fix would still be worth it.
+
+### Corrected sweep
+
+`energy-abs-*` vary `w_resultant_abs_energy` over 0.03 / 0.3 / 3, chosen so the
+anchor term lands at roughly 10%, 100% and 1000% of the reducible energy, and
+against the calibrated target so the target's own 2.5% bias is out of the way.
+
+*(running)*
 
 ## Caveats
 
