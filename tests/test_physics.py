@@ -493,6 +493,37 @@ def test_epoch_history_keys_match_the_epoch_summary():
     assert not missing, f"fit() reads keys _train_one_epoch never returns: {missing}"
 
 
+def test_every_history_channel_is_actually_recorded():
+    """The reverse direction: a declared channel that is never appended.
+
+    The key-matching test above catches fit() reading a key that does not
+    exist.  It cannot catch the opposite failure, which is what happened to
+    "L_energy": the energy form's own objective was accumulated per batch and
+    printed in the epoch summary, but history never declared or appended it,
+    so the one quantity being minimised was the one quantity not kept.  No key
+    mismatch, no error -- just a channel silently missing from every run.
+
+    Checked statically so this stays cheap: every channel declared in the
+    history dict must be appended somewhere in fit().
+    """
+    import inspect
+    import re
+
+    from training import trainer as trainer_mod
+
+    init_src = inspect.getsource(trainer_mod.PI_GINOT_Trainer.__init__)
+    decl_block = init_src[init_src.index("self.history = {"):]
+    decl_block = decl_block[:decl_block.index("}")]
+    declared = set(re.findall(r'"(\w+)":', decl_block))
+
+    fit_src = inspect.getsource(trainer_mod.PI_GINOT_Trainer.fit)
+    appended = set(re.findall(r'self\.history\["(\w+)"\]\.append', fit_src))
+
+    never = sorted(declared - appended)
+    assert not never, (
+        f"history channels declared but never appended in fit(): {never}")
+
+
 # ----------------------------------------------------- verification level --
 
 def test_operators_are_exact():

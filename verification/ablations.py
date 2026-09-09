@@ -83,6 +83,39 @@ ARMS = {
         "penalty", {"resultant_anchor": "none"}, {},
         "no absolute target; reaction self-consistency alone.  Separates "
         "'the anchor is biased' from 'the anchor is load-bearing'"),
+    # The section anchor under the energy form.  Phase 2 shipped it off on the
+    # strength of a <=0.5% force error with no anchor -- on ONE fine-tuned
+    # specimen.  The operator study shows the energy form's force error is
+    # *worse* than the penalty form's once capacity is shared (3.5% vs 2.5%),
+    # which is what "natural BCs hold at the minimum" predicts for a network
+    # that does not reach the minimum per geometry.  These arms ask whether
+    # putting the anchor back recovers the force balance without giving up the
+    # stress accuracy the energy form buys.
+    #
+    # The weight has to be swept rather than guessed: the energy loss is
+    # O(5e-4) with only ~1e-4 of it reducible, while the anchor term starts
+    # near 0.4, so the sensible range spans orders of magnitude and the
+    # informative comparison is against `energy-w0` at the same epoch budget.
+    "energy-w0": (
+        "energy", {}, {}, "energy form, no anchor — control for the sweep"),
+    "energy-anchor-1e-5": (
+        "energy", {"w_resultant_energy": 1e-5}, {},
+        "anchor at ~4% of the reducible energy"),
+    "energy-anchor-1e-4": (
+        "energy", {"w_resultant_energy": 1e-4}, {},
+        "anchor at ~40% of the reducible energy"),
+    "energy-anchor-1e-3": (
+        "energy", {"w_resultant_energy": 1e-3}, {},
+        "anchor dominant — expected to trade stress accuracy for force"),
+    # The sweep above moves the force error only 4.2% -> 3.7%.  The likely
+    # reason is that the anchor's TARGET is itself biased: `series` runs ~2.5%
+    # high against the finite-element reference, so no weight on it can pull a
+    # +4% error below +2.5%.  This arm swaps in the calibrated target (0.74%
+    # mean error) at the sweep's best weight, which is the direct test.
+    "energy-anchor-calib": (
+        "energy", {"w_resultant_energy": 1e-4,
+                   "resultant_anchor": "series_calibrated"}, {},
+        "best sweep weight, but against a target that is not itself biased"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "
@@ -102,7 +135,8 @@ def run_arm(name: str, args, val_indices):
         model, epochs, wall = train_operator(
             form, args.minutes, args.bank, args.batch, args.lr, args.device,
             args.seed, args.out, args.n_interior,
-            overrides=over, colloc_overrides=coll_over, tag=name)
+            overrides=over, colloc_overrides=coll_over, tag=name,
+            max_epochs=args.epochs)
         rows = evaluate(model, val_indices, args.device)
     finally:
         # train_operator mutates the module-level collocation config; without
@@ -147,6 +181,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--arms", default=",".join(ARMS))
     ap.add_argument("--minutes", type=float, default=20.0)
+    ap.add_argument("--epochs", type=int, default=None,
+                    help="fixed epoch budget instead of wall-clock; the "
+                         "right budget when the arms cost the same per epoch")
     ap.add_argument("--bank", type=int, default=16)
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--lr", type=float, default=3e-4)

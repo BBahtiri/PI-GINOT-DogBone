@@ -157,6 +157,10 @@ class PI_GINOT_Trainer:
             "epoch": [], "loss": [], "raw_loss": [],
             "L_eq": [], "L_trac_top": [], "L_trac_arc": [],
             "L_trac_hole": [], "L_part": [], "L_barrier": [], "L_resultant": [],
+            # The energy form's own objective.  It was accumulated per batch
+            # and printed in the epoch summary but never kept, so the one
+            # quantity being minimised was the one quantity not recorded.
+            "L_energy": [],
             "w_eq": [], "w_trac_top": [], "w_trac_arc": [],
             "val_raw_loss": [],
             "ckpt_swap_du": [], "ckpt_section_cv": [],
@@ -405,6 +409,7 @@ class PI_GINOT_Trainer:
             self.history["L_trac_hole"].append(batch_loss["L_trac_hole"])
             self.history["L_part"].append(batch_loss["L_part"])
             self.history["L_barrier"].append(batch_loss["L_barrier"])
+            self.history["L_energy"].append(batch_loss.get("L_energy", 0.0))
             # _train_one_epoch returns the batch-mean under "L_resultant";
             # "L_resultant_log" is the per-geometry key and never appears here,
             # so this channel logged a constant 0.0 for every run to date.
@@ -592,11 +597,10 @@ class PI_GINOT_Trainer:
                         sample_ids=v_sid,
                     )
 
-                # Section-resultant loss (same as training)
-                w_res = self.config.get("w_resultant", 0.0)
-                if self._energy_form and not self.config.get(
-                        "w_resultant_energy", 0.0):
-                    w_res = 0.0
+                # Section-resultant loss (same weighting rule as training)
+                w_res = (float(self.config.get("w_resultant_energy", 0.0))
+                         if self._energy_form
+                         else self.config.get("w_resultant", 0.0))
                 L_res_val = 0.0
                 if w_res > 0.0:
                     L_res_val = self._compute_section_resultant_loss(
@@ -863,14 +867,18 @@ class PI_GINOT_Trainer:
             )
 
         # Section-resultant loss (axial force consistency)
-        # The section-resultant anchor exists to hold the force balance that
-        # the penalty form does not enforce.  Under the energy form the
-        # measured section-force error is already <= 0.5% with no anchor at
-        # all, so it is off by default there and can be re-enabled explicitly.
-        w_resultant = getattr(self, "_w_resultant_eff",
-                              self.config.get("w_resultant", 0.0))
-        if self._energy_form and not self.config.get("w_resultant_energy", 0.0):
-            w_resultant = 0.0
+        # The anchor holds the force balance that the penalty form does not
+        # enforce.  Under the energy form it gets its OWN weight rather than
+        # sharing `w_resultant`: the two losses live on different scales
+        # (nondimensional Pi is O(5e-4) here against a penalty loss of O(1)),
+        # so one shared number would silently make the anchor orders of
+        # magnitude more or less important depending only on the form.
+        # Default 0.0 = off, which is what Phase 2 shipped.
+        if self._energy_form:
+            w_resultant = float(self.config.get("w_resultant_energy", 0.0))
+        else:
+            w_resultant = getattr(self, "_w_resultant_eff",
+                                  self.config.get("w_resultant", 0.0))
         if w_resultant > 0.0:
             geometry_latent = loss_dict["geometry_latent"]
             L_resultant = self._compute_section_resultant_loss(

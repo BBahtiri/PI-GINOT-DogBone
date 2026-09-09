@@ -190,9 +190,16 @@ TRAINING_CONFIG = {
                                     # a fixed rule collapses (Pi/Pi_ref -> 0.007
                                     # while the field gets 3x worse)
     "energy_n_per_elem": 3,         # stratified samples per triangle
-    "w_resultant_energy": 0.0,      # section anchor under the energy form; the
-                                    # measured force error is already <= 0.5%
-                                    # without it
+    # Section anchor under the energy form.  This is a WEIGHT, not a gate: the
+    # energy loss is O(5e-4) nondimensional against a penalty loss of O(1), so
+    # sharing `w_resultant` (10.0) would make the anchor dominate by orders of
+    # magnitude for no stated reason.  0.0 = off, which is what Phase 2 shipped
+    # on the strength of a <=0.5% force error with no anchor at all -- measured
+    # on ONE fine-tuned specimen.  The operator study (docs/phase2_operator.md)
+    # shows that justification does not transfer: with capacity shared across a
+    # bank the energy form's force error is 3.5% against the penalty form's
+    # 2.5%.  Natural BCs are only satisfied AT the minimum.
+    "w_resultant_energy": 0.0,
 
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline

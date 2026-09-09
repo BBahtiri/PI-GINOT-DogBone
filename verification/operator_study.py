@@ -98,8 +98,14 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
                    lr: float, device: str, seed: int, out: str,
                    n_interior: int, chunk_epochs: int = 25,
                    overrides: dict = None, colloc_overrides: dict = None,
-                   tag: str = None):
+                   tag: str = None, max_epochs: int = None):
     """Train one operator under a wall-clock budget, in short fit() chunks.
+
+    ``max_epochs`` stops on an epoch count instead of the clock.  Equal
+    wall-clock is the right budget when comparing formulations that differ in
+    cost per epoch; equal epochs is the right budget when comparing a single
+    lever within one formulation, where it also makes the result immune to
+    whatever else the machine happens to be doing.
 
     ``overrides`` / ``colloc_overrides`` let an ablation change one lever and
     nothing else; both are applied *before* the loss object is built, so a
@@ -128,12 +134,15 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
                           save_dir=os.path.join(out, tag or form))
 
     t0 = time.time()
-    deadline = t0 + minutes * 60.0
+    deadline = t0 + minutes * 60.0 if max_epochs is None else float('inf')
     epochs = 0
-    while time.time() < deadline:
+    while time.time() < deadline and (max_epochs is None
+                                      or epochs < max_epochs):
+        n = chunk_epochs if max_epochs is None else min(
+            chunk_epochs, max_epochs - epochs)
         tr.start_epoch = 0
-        tr.fit(epochs=chunk_epochs, print_every=10 ** 6)
-        epochs += chunk_epochs
+        tr.fit(epochs=n, print_every=10 ** 6)
+        epochs += n
     wall = time.time() - t0
     print(f"  [{tag or form}] {epochs} epochs in {wall / 60:.1f} min "
           f"({wall / max(epochs, 1):.2f} s/epoch)", flush=True)
