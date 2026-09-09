@@ -59,6 +59,17 @@ def build_geometry_bank(n: int, geo_ranges: Optional[dict], holes_on: bool,
     return bank
 
 
+def train_bank_params(n: int, geo_ranges: Optional[dict] = None) -> List[dict]:
+    """Parameters of the training bank, exactly as the trainer builds it.
+
+    The trainer uses mesh_only=True for the train bank (collocation is
+    regenerated each epoch), so the parameter sequence differs from the
+    validation bank's -- see build_geometry_bank.
+    """
+    return build_geometry_bank(n, geo_ranges, holes_on=False,
+                               seed=TRAIN_BANK_SEED, mesh_only=True)
+
+
 def val_bank_params(n: int, geo_ranges: Optional[dict] = None) -> List[dict]:
     """Parameters of the frozen validation bank, exactly as the trainer builds it."""
     bank = build_geometry_bank(n, geo_ranges, holes_on=False,
