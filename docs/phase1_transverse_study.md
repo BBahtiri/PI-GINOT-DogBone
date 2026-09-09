@@ -86,10 +86,74 @@ Fine-tuning improves v from 5.40 to 0.89 but degrades u from 0.030 to 0.053
 and swings the section force from −23.9% to +10.2%. A formulation where these
 do not trade against each other is the real goal, not a better weight.
 
+---
+
+## Confirmation across the taper range
+
+The single-geometry result above is one specimen. Repeating it on six more,
+spanning the full taper range of the parameter space, varying **only**
+`w_trac_top` (2 → 100) so the effect is attributable to one knob. 200 epochs;
+all runs plateaued.
+
+Final errors against the reference:
+
+| geo | taper | run | u rel L2 | v rel L2 | vm rel L2 | σ₂₂/peak | N err |
+|---|---|---|---|---|---|---|---|
+| 19 | 0.27 | shipped | 9.38e-02 | 7.53e-01 | 4.14e-01 | 9.10e-02 | +22.0% |
+| 19 | 0.27 | wtop=100 | 9.33e-02 | 3.55e-01 | 3.98e-01 | 5.07e-02 | +24.4% |
+| 2 | 0.32 | shipped | 7.29e-02 | 5.54e-01 | 3.31e-01 | 7.20e-02 | +15.2% |
+| 2 | 0.32 | wtop=100 | 7.21e-02 | 3.03e-01 | 3.21e-01 | 4.58e-02 | +16.7% |
+| 13 | 0.43 | shipped | 5.52e-02 | 3.37e-01 | 2.34e-01 | 5.50e-02 | +8.3% |
+| 13 | 0.43 | wtop=100 | 5.51e-02 | 2.18e-01 | 2.30e-01 | 4.09e-02 | +9.3% |
+| 1 | 0.50 | shipped | 5.82e-02 | 2.97e-01 | 2.18e-01 | 6.01e-02 | +7.1% |
+| 1 | 0.50 | wtop=100 | 5.80e-02 | 2.02e-01 | 2.13e-01 | 4.44e-02 | +8.2% |
+| 4 | 0.60 | shipped | 4.66e-02 | 2.42e-01 | 1.69e-01 | 4.97e-02 | +4.4% |
+| 4 | 0.60 | wtop=100 | 4.66e-02 | 1.95e-01 | 1.67e-01 | 3.84e-02 | +5.2% |
+| 11 | 0.78 | shipped | 1.78e-02 | 1.49e-01 | 7.31e-02 | 2.49e-02 | +0.8% |
+| 11 | 0.78 | wtop=100 | 1.78e-02 | 1.42e-01 | 7.26e-02 | 2.21e-02 | +1.0% |
+
+Ratio of the reweighted error to the shipped error — below 1 is better:
+
+| geo | taper | v | σ₂₂ | von Mises | u |
+|---|---|---|---|---|---|
+| 19 | 0.27 | **0.471** | 0.557 | 0.962 | 0.995 |
+| 2 | 0.32 | 0.547 | 0.636 | 0.969 | 0.989 |
+| 13 | 0.43 | 0.648 | 0.744 | 0.983 | 0.998 |
+| 1 | 0.50 | 0.681 | 0.737 | 0.979 | 0.998 |
+| 4 | 0.60 | 0.806 | 0.774 | 0.984 | 1.000 |
+| 11 | 0.78 | 0.952 | 0.885 | 0.994 | 0.999 |
+| **mean** | | **0.684** | **0.722** | 0.979 | 0.997 |
+
+Four things worth reading off this:
+
+1. **It helps on every geometry, and never hurts.** v improves on all six,
+   σ₂₂ on all six.
+2. **The benefit scales with the failure.** The improvement is largest exactly
+   where the operator is worst (0.471 at taper 0.27) and fades to nothing
+   where it is already accurate (0.952 at 0.78). A lever that targets the
+   failure mode rather than shifting error around.
+3. **The axial field is untouched** — u ratio 0.997 on average, within noise
+   on every geometry.
+4. **The section force degrades by about one percentage point** consistently
+   (+22.0% → +24.4%, +15.2% → +16.7%, …). Small but systematic, and it is the
+   competition noted above showing up again.
+
+Note the single-geometry run earlier changed *two* weights and reached a v
+ratio of 0.426 on geometry 0 (taper 0.28); the comparable single-knob run here
+reaches 0.471 at taper 0.27. So `w_trac_top` accounts for most of the effect
+and `w_traction_partial` adds a little.
+
+The mean v improvement across the range is **1.46×**, not the 2.4× the worst
+single geometry suggested — because the mildly tapered specimens, where there
+is little to gain, are included.
+
+---
+
 ## What this does *not* establish
 
-- One geometry, the most strongly tapered one. The lever should be confirmed
-  across the taper range before the default changes.
+- Single-geometry training is not operator training. All of this removes the
+  128-geometry allocation problem by construction; the multi-geometry dynamics
+  could differ.
 - Single-geometry training is not operator training. The multi-geometry error
   (168%) is worse than this plateau (89%), so allocation does contribute — it
   is just not what sets the floor.
@@ -98,13 +162,22 @@ do not trade against each other is the real goal, not a better weight.
 
 ## Recommendation
 
-`w_trac_top` is **not** changed in `config.py` on this evidence — one geometry
-is too narrow a basis for a hyperparameter with training-wide effects. It
-belongs in the ablation matrix as its own row, alongside `resultant_anchor`
-and `boundary_measure_consistent`, and it should be swept across the taper
-range on a retrained model.
+`w_trac_top` is **still not changed** in `config.py`. The evidence is now seven
+geometries spanning the full taper range rather than one, but it is all
+single-geometry training, and a training-wide hyperparameter is the kind of
+decision that should be made deliberately rather than inherited from a
+diagnostic. Changing it would also silently break comparability with every
+number reported so far.
 
-If the 2.4× reduction holds across geometries, this is the cheapest
-improvement available to the project — a one-line configuration change that
-addresses the documented weakness directly, and it should be measured before
-the far larger Phase 2 rewrite is undertaken.
+It is recorded next to the value in `config.py` and belongs in the ablation
+matrix as its own row, alongside `resultant_anchor` and
+`boundary_measure_consistent` — all three documented, ablatable, and off by
+default, so that Phase 0 and Phase 1 change what is *measured* and not what is
+trained.
+
+**The recommendation itself is strong.** A one-line configuration change cuts
+the transverse displacement error by 1.46× on average and 2.1× where the
+operator is weakest, at no cost to axial accuracy and about one percentage
+point on the section force. That is the cheapest improvement available to the
+project, and it should be measured on a retrained model before the far larger
+Phase 2 rewrite is undertaken.

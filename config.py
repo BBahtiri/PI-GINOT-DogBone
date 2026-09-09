@@ -175,9 +175,14 @@ TRAINING_CONFIG = {
                                     # means P22=P12=0), and it is the lowest
                                     # weight here -- 50x below w_equilibrium.
                                     # Raising it to 100 cuts the transverse
-                                    # displacement error 2.4x on val[0] with no
-                                    # axial cost. Not changed by default: the
-                                    # evidence is one geometry. See
+                                    # displacement error 1.46x on average over
+                                    # 7 geometries spanning the taper range --
+                                    # 2.1x where the operator is weakest, ~1.0x
+                                    # where it is already good -- at no axial
+                                    # cost and ~1pp on the section force.
+                                    # Not changed by default: all the evidence
+                                    # is single-geometry training, and this is
+                                    # a training-wide knob. Ablation row. See
                                     # docs/phase1_transverse_study.md.
     "w_trac_arc": 20.0,             # Reduced: was over-weighting local arc at expense of global balance
     "w_traction_partial": 2.0,      # Reduced for same reason

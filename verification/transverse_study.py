@@ -67,11 +67,25 @@ MU = MATERIAL_CONFIG["mu"]
 LAM = MATERIAL_CONFIG["lam"]
 STATE = MATERIAL_CONFIG["state"]
 
-# Loss-weight sets under test.  'shipped' is config.py verbatim.
+# Named loss-weight sets.  'shipped' is config.py verbatim.  A run may also be
+# named ``wtop=<value>``, which varies *only* w_trac_top -- one knob at a time,
+# so the effect is attributable.
 WEIGHT_SETS = {
     "shipped": {},
     "reweighted": {"w_trac_top": 100.0, "w_traction_partial": 20.0},
 }
+
+
+def weight_overrides(name: str) -> dict:
+    """Loss-weight overrides for a run name."""
+    if name in WEIGHT_SETS:
+        return dict(WEIGHT_SETS[name])
+    if name.startswith("wtop="):
+        return {"w_trac_top": float(name.split("=", 1)[1])}
+    if name == "fresh":
+        return {}
+    raise ValueError(f"unknown run {name!r}; expected one of "
+                     f"{sorted(WEIGHT_SETS)}, 'fresh', or 'wtop=<value>'")
 
 
 def _tensors(coll, device, u_delta, sample_id):
@@ -113,7 +127,7 @@ def run_one(name: str, params: dict, coll, sol, checkpoint, epochs: int,
             seed: int = 0) -> dict:
     """Fine-tune (or train) on one geometry, tracking error against the FEM."""
     set_deterministic(seed)
-    overrides = WEIGHT_SETS[name] if name in WEIGHT_SETS else {}
+    overrides = weight_overrides(name)
     from_scratch = name == "fresh"
 
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
@@ -167,9 +181,10 @@ def run_one(name: str, params: dict, coll, sol, checkpoint, epochs: int,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--geo", type=int, default=0,
-                    help="validation-bank index (0 is the worst in case 1.4)")
-    ap.add_argument("--runs", default="shipped,reweighted,fresh")
+    ap.add_argument("--geos", default="0",
+                    help="comma-separated validation-bank indices")
+    ap.add_argument("--runs", default="shipped,reweighted,fresh",
+                    help="named sets, 'fresh', or 'wtop=<value>'")
     ap.add_argument("--epochs", type=int, default=600)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--track-every", type=int, default=50)
@@ -192,60 +207,86 @@ def main():
     bank = build_geometry_bank(TRAINING_CONFIG["bank_val_size"],
                                TRAINING_CONFIG["bank_geo_ranges"],
                                holes_on=False, seed=VAL_BANK_SEED)
-    gmesh, coll = bank[args.geo]
-    params = gmesh.params
-    fi = get_fillet_geometry(params)
+    geos = [int(g) for g in args.geos.split(",")]
+    run_names = [r.strip() for r in args.runs.split(",")]
 
-    # Thin the collocation set: this study asks whether the transverse field is
-    # learnable on one geometry, not what the production budget achieves.
-    if args.n_interior and args.n_interior < len(coll.interior_pts):
-        rng = np.random.default_rng(0)
-        idx = rng.choice(len(coll.interior_pts), args.n_interior,
-                         replace=False)
-        coll.interior_pts = coll.interior_pts[idx]
+    print("Transverse-field study — one geometry at a time, "
+          "allocation removed")
+    print("=" * 84)
+    print(f"  geometries {geos}   runs {run_names}")
+    print(f"  {args.epochs} epochs, Adam {args.lr}, device {args.device}\n")
 
-    print("Transverse-field study — one geometry, allocation removed")
-    print("=" * 78)
-    print(f"  val[{args.geo}]  L={params['L_total']:.1f} "
-          f"W_grip={params['W_grip']:.1f} W_gauge={params['W_gauge']:.1f} "
-          f"R={params['R_fillet']:.1f}   "
-          f"taper W_gauge/W_grip = {params['W_gauge'] / params['W_grip']:.2f}")
-    print(f"  {args.epochs} epochs, Adam {args.lr}, device {args.device}")
+    all_results = {}
+    for gi in geos:
+        gmesh, coll = bank[gi]
+        params = gmesh.params
+        fi = get_fillet_geometry(params)
+        taper = params["W_gauge"] / params["W_grip"]
 
-    print("\n  solving the finite-element reference once...", flush=True)
-    fmesh = build_mesh(params, h=default_h(fi) * args.ref_h_factor)
-    sol = fem_solve(fmesh, LOADING_CONFIG["u_max"], MU, LAM, STATE,
-                    n_steps=1, verbose=False)
-    print(f"  reference: {fmesh.n_elem} elements, "
-          f"{sol.n_newton} Newton iterations\n")
+        if args.n_interior and args.n_interior < len(coll.interior_pts):
+            rng = np.random.default_rng(0)
+            idx = rng.choice(len(coll.interior_pts), args.n_interior,
+                             replace=False)
+            coll.interior_pts = coll.interior_pts[idx]
 
-    results = []
-    for name in args.runs.split(","):
-        name = name.strip()
-        print(f"  --- {name} "
-              f"({WEIGHT_SETS.get(name, {}) or 'config weights'}"
-              f"{', fresh init' if name == 'fresh' else ''}) ---")
-        results.append(run_one(name, params, coll, sol, args.checkpoint,
-                               args.epochs, args.lr, args.device,
-                               sample_id=100 + args.geo,
-                               track_every=args.track_every))
+        print(f"  === val[{gi}]  L={params['L_total']:.1f} "
+              f"W_grip={params['W_grip']:.1f} "
+              f"W_gauge={params['W_gauge']:.1f} R={params['R_fillet']:.1f}   "
+              f"taper {taper:.2f} ===", flush=True)
+        fmesh = build_mesh(params, h=default_h(fi) * args.ref_h_factor)
+        sol = fem_solve(fmesh, LOADING_CONFIG["u_max"], MU, LAM, STATE,
+                        n_steps=1, verbose=False)
+        print(f"      reference: {fmesh.n_elem} elements, "
+              f"{sol.n_newton} Newton iterations", flush=True)
 
-    print("\n" + "=" * 78)
-    print(f"{'run':>12}{'u rel L2':>12}{'v rel L2':>12}{'vm rel L2':>12}"
-          f"{'s22/peak':>12}{'N err':>10}")
-    print("-" * 70)
-    for r in results:
-        a, b = r["history"][0], r["history"][-1]
-        print(f"{r['name'] + ' start':>12}{a['u']:>12.3e}{a['v']:>12.3e}"
-              f"{a['vm']:>12.3e}{a['s22']:>12.3e}"
-              f"{100 * a['N_err']:>9.1f}%")
-        print(f"{r['name'] + ' end':>12}{b['u']:>12.3e}{b['v']:>12.3e}"
-              f"{b['vm']:>12.3e}{b['s22']:>12.3e}"
-              f"{100 * b['N_err']:>9.1f}%")
-    path = os.path.join(args.out, f"geo{args.geo}.json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(results, fh, indent=2, default=float)
-    print(f"\nWrote {path}")
+        results = []
+        for name in run_names:
+            results.append(run_one(name, params, coll, sol, args.checkpoint,
+                                   args.epochs, args.lr, args.device,
+                                   sample_id=100 + gi,
+                                   track_every=args.track_every))
+        all_results[gi] = {"params": params, "taper": taper,
+                           "runs": results}
+        path = os.path.join(args.out, f"geo{gi}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(results, fh, indent=2, default=float)
+
+    print("\n" + "=" * 84)
+    print("Final errors against the finite-element reference")
+    print(f"{'geo':>5}{'taper':>7}{'run':>14}{'u rel L2':>11}"
+          f"{'v rel L2':>11}{'vm rel L2':>11}{'s22/peak':>11}{'N err':>9}")
+    print("-" * 80)
+    for gi, block in all_results.items():
+        for r in block["runs"]:
+            b = r["history"][-1]
+            print(f"{gi:>5}{block['taper']:>7.2f}{r['name']:>14}"
+                  f"{b['u']:>11.3e}{b['v']:>11.3e}{b['vm']:>11.3e}"
+                  f"{b['s22']:>11.3e}{100 * b['N_err']:>8.1f}%")
+
+    if len(geos) > 1 and len(run_names) == 2:
+        base, alt = run_names
+        print("\n" + "-" * 80)
+        print(f"Effect of {alt} versus {base}: ratio of final error "
+              "(below 1 is better)")
+        print(f"{'geo':>5}{'taper':>7}{'v ratio':>10}{'s22 ratio':>11}"
+              f"{'vm ratio':>10}{'u ratio':>10}")
+        print("-" * 53)
+        ratios = []
+        for gi, block in all_results.items():
+            a = {r["name"]: r["history"][-1] for r in block["runs"]}
+            v = a[alt]["v"] / a[base]["v"]
+            s2 = a[alt]["s22"] / a[base]["s22"]
+            vm = a[alt]["vm"] / a[base]["vm"]
+            uu = a[alt]["u"] / a[base]["u"]
+            ratios.append((v, s2, vm, uu))
+            print(f"{gi:>5}{block['taper']:>7.2f}{v:>10.3f}{s2:>11.3f}"
+                  f"{vm:>10.3f}{uu:>10.3f}")
+        m = np.array(ratios).mean(axis=0)
+        print("-" * 53)
+        print(f"{'mean':>12}{m[0]:>10.3f}{m[1]:>11.3f}{m[2]:>10.3f}"
+              f"{m[3]:>10.3f}")
+
+    print(f"\nWrote per-geometry JSON to {args.out}/")
 
 
 if __name__ == "__main__":
