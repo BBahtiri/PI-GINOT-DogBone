@@ -179,8 +179,87 @@ What remains is optimiser-side or supervision:
    physics+data objective would sidestep the conditioning entirely — at the
    cost of the reference-free property the whole approach was chosen for.
 
-Both are Phase 4 questions. What Phase 3 settles is that the transverse field
-is not reachable by any weighting of the terms currently in either loss.
+Both looked like Phase 4 questions at this point. The ceiling measured in the
+next section shows neither is, which is why this section's conclusion is
+narrower than it first appeared: what the sweep settles is that the transverse
+field is not reachable by any weighting of the terms in either loss — not that
+a better optimiser would reach it.
+
+## The ceiling: conditioning is real but not the binding constraint
+
+Both remaining routes — a scale-invariant optimiser, or supervision — are
+expensive, and both assume the architecture could reach the transverse field if
+only training let it. `verification/supervised_ceiling.py` tests that
+assumption directly, and cheaply, by removing every obstacle at once: it trains
+the same `PI_GINOT` on the finite-element `(u, v)` fields with a **per-component
+relative** loss,
+
+```
+L = ||u_pred − u_ref||² / ||u_ref||²  +  ||v_pred − v_ref||² / ||v_ref||²
+```
+
+which gives the two components equal footing by construction — exactly the
+preconditioning Π lacks — and hands the model the answer besides. It is not a
+training recipe (it needs a solve per geometry, the very thing the approach
+exists to avoid). It is an upper bound on what any amount of optimiser or loss
+work could achieve.
+
+| | train `u` | train `v` | held-out `u` | held-out `v` |
+|---|---|---|---|---|
+| supervised, bank 16 | 1.90e-03 | **4.18e-03** | 2.13e-02 | **3.30e-01** |
+| supervised, bank 64 | 3.21e-03 | **6.62e-03** | 1.36e-02 | **3.04e-01** |
+| *generalisation factor, bank 16* | | | *11.2×* | ***78.9×*** |
+| *generalisation factor, bank 64* | | | *4.2×* | ***46.0×*** |
+| energy form, bank 16 | | | 2.58e-02 | 3.58e-01 |
+| energy form, bank 64 | | | 1.29e-02 | **2.88e-01** |
+
+**The architecture fits `v` to 0.4% on geometries it has seen.** The ansatz, the
+decoder capacity and the hard-BC construction are all entirely adequate — the
+question `verification/ansatz_study.py` could only answer indirectly is now
+answered directly.
+
+**And it changes nothing about held-out `v`.** With conditioning removed by
+construction and ground truth supplied, held-out `v` is 3.30e-01 against the
+physics-trained 3.58e-01 — an 8% gap. At bank 64 the physics-trained model is
+**better than the supervised one** (2.88e-01 vs 3.04e-01).
+
+So the 183× curvature ratio is a true fact about Π, and it correctly explains
+why none of the physics-side levers move `v`. But it is **not the binding
+constraint**: repairing it perfectly is worth at most ~8%, because something
+else caps the transverse field at ~0.3 regardless of how the model is trained.
+
+That something is **geometry generalisation**, and the contrast with `u` is what
+identifies it. Quadrupling the training set improves the axial generalisation
+factor 11.2× → 4.2×, while the transverse factor only goes 78.9× → 46.0× and
+the held-out error barely moves. Training error stays at 0.3–0.7% throughout,
+so this is not capacity saturation. The encoder carries whatever determines the
+axial field to an unseen shape, and does not carry whatever determines the
+transverse one.
+
+A plausible mechanism, offered as a hypothesis rather than a result: the axial
+field is pinned by the prescribed elongation and the section areas — global,
+low-frequency, strongly constrained — while the transverse field depends on the
+local Poisson response through the fillet, which is precisely the fine
+geometric detail the encoder's farthest-point-sampling and ball-query
+subsampling is free to discard. It predicts that boundary-point resolution near
+the fillet, not loss design, is what moves `v`.
+
+## What follows — revised
+
+The three recommendations above were written before the ceiling was measured,
+and the ordering is now wrong. Corrected:
+
+1. **Phase 4 belongs in the encoder**, not the loss and not the optimiser. The
+   held-out transverse error is set by how the geometry is represented, and
+   four independent training-side interventions — formulation, weighting,
+   training length, bank size — plus supervision with ground truth all land
+   within 15% of each other.
+2. **A scale-invariant optimiser is worth at most ~8%** on this quantity, on
+   this evidence. It remains the right answer to the conditioning ratio, and
+   the conditioning ratio is no longer the interesting problem.
+3. **Supervising `v` is not worth its cost.** It requires a solve per geometry,
+   forfeits the reference-free property, and at bank 64 loses to physics
+   training on the very quantity it was meant to rescue.
 
 ## Caveats
 
