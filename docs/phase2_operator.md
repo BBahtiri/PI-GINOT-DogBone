@@ -241,14 +241,47 @@ construction; the second need not. This is a hypothesis, not a result — it
 predicts that the gap should shrink with a larger training bank, which is the
 test worth running next and is cheap relative to what has been spent here.
 
+## Testing that hypothesis: bank size
+
+If Π is being driven down shape-by-shape rather than as a field property, more
+shapes should force the operator to find the property. Energy form, 400 epochs,
+everything else identical, bank 16 → 32 → 64:
+
+| training bank | u | v | vm | vm fillet | \|N err\| | force gap |
+|---|---|---|---|---|---|---|
+| 16 | 2.58e-02 | 3.58e-01 | 8.43e-02 | 1.20e-01 | 4.25% | +2.43 |
+| 32 | **1.28e-02** | 3.51e-01 | 6.23e-02 | 8.50e-02 | **2.23%** | **+0.91** |
+| 64 | 1.29e-02 | **2.88e-01** | **5.92e-02** | **8.22e-02** | 2.40% | +0.88 |
+| *penalty @16* | *3.24e-02* | *3.13e-01* | *1.57e-01* | *2.23e-01* | *2.47%* | *−1.58* |
+
+**The prediction holds.** Doubling the bank cuts the held-out force error from
+4.25% to 2.23% and the train→held-out gap from 2.43 to 0.91 points; doubling
+again changes neither. The regression against the penalty form is gone at bank
+32 — and it was never a property of the formulation.
+
+The gap is also **insensitive to training length and sensitive to bank size**,
+which is the signature that distinguishes the two explanations. The bank-16
+energy model measured at 400 epochs and at 1750 epochs gives gaps of 2.43 and
+2.54; four and a half times the training buys nothing, while twice the
+geometries cuts it by two thirds. Underfitting would have shown the opposite.
+
+Two things the bank does *not* fix. `u` and `vm` improve sharply from 16 to 32
+and then stop, so bank 32 is where this bank saturates — the remaining stress
+error is not a data-quantity problem. And `v` barely moves (3.58 → 3.51 →
+2.88e-01): a 20% improvement at bank 64 against 2× on the force. **The
+transverse field is the one failure that survives every lever tried in Phases
+1 and 2** — formulation, weighting, training length, and now training-set size.
+
 Three things follow for the plan:
 
 1. **Do not add a force anchor to the energy form.** Not at any weight. It
    targets a quantity that is not wrong where the loss can see it.
-2. **The energy form's force regression is a bank-size question**, not a loss
-   design question. Try 32 and 64 training geometries before touching the loss.
-3. The stress advantage (≈2×, robust to the budget definition) is unaffected by
-   any of this and stands on its own.
+2. **Train on at least 32 geometries.** The force regression that motivated
+   the whole anchor investigation disappears there, and `u` and `vm` improve
+   by 2× and 1.35× for no extra cost per epoch.
+3. **The transverse field is the open problem**, and it is now isolated: it is
+   the only quantity that has not responded to formulation, weighting, budget
+   or bank size. That, not the force balance, is where Phase 3 should go.
 
 ## Caveats
 
@@ -265,9 +298,14 @@ epoch-matched table above shows.
 **Moderate taper only** (0.436–0.549). The extremes, where Phase 1 found the
 error largest, are not represented.
 
-**A single seed, a single bank size, a single learning rate.** Nothing here
-separates the formulations from their interaction with `lr = 3e-4` — and the
-bank-size hypothesis above is precisely a claim that one of these matters.
+**A single seed and a single learning rate.** Nothing here separates the
+formulations from their interaction with `lr = 3e-4`.
+
+**The bank sweep is energy-only.** The penalty form was measured at bank 16
+alone, so the bank-32 rows are not a like-for-like comparison against it —
+the penalty form may improve with bank size too. The claim the sweep supports
+is about the *energy form's own* train→held-out gap, which is measured against
+itself and needs no such control.
 
 **The train/held-out force table uses 8 training and 5 held-out geometries**
 against the closed-form target rather than FEM. The target is 0.44% from FEM
