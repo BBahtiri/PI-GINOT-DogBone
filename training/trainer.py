@@ -124,6 +124,15 @@ class PI_GINOT_Trainer:
         # Closed-form resultant anchors, cached per (geometry, u_delta, mode)
         self._anchor_cache = {}
 
+        # Energy form: the loss is the total potential energy rather than a
+        # weighted sum of residual penalties.  Detected from the loss object
+        # rather than a config flag, so the two cannot disagree.
+        from physics.weak_form import EnergyLoss
+        self._energy_form = isinstance(self.loss_fn, EnergyLoss)
+        if self._energy_form:
+            print("  Loss form: total potential energy "
+                  "(traction conditions are natural BCs)")
+
         # Run manifest: git state, library and GPU versions, and a hash over
         # the scientific config.  Written once per run and stamped into every
         # checkpoint, so a checkpoint can always be traced to what made it.
@@ -335,18 +344,31 @@ class PI_GINOT_Trainer:
                 epoch=epoch, save_geo=save_geo_this_epoch,
             )
 
-            # Unweighted raw loss (the true progress metric)
-            raw_loss = (batch_loss["L_eq"] + batch_loss["L_trac_top"]
-                        + batch_loss["L_trac_arc"] + batch_loss["L_trac_hole"]
-                        + batch_loss["L_part"] + batch_loss["L_barrier"])
+            # Unweighted physics figure, comparable across epochs.  Under the
+            # energy form there are no penalty channels to sum, so it is the
+            # nondimensional energy plus the barrier -- the quantity actually
+            # being minimised.
+            if self._energy_form:
+                raw_loss = (batch_loss.get("L_energy", 0.0)
+                            + batch_loss["L_barrier"])
+            else:
+                raw_loss = (batch_loss["L_eq"] + batch_loss["L_trac_top"]
+                            + batch_loss["L_trac_arc"]
+                            + batch_loss["L_trac_hole"]
+                            + batch_loss["L_part"] + batch_loss["L_barrier"])
             L_res_batch = batch_loss.get("L_resultant", 0.0)
             w_res_eff = getattr(self, "_w_resultant_eff", 0.0)
             raw_total = raw_loss + w_res_eff * L_res_batch
 
-            # Current adaptive weights
-            w_eq_val = self.loss_fn.w_eq.item()
-            w_top_val = self.loss_fn.w_trac_top.item()
-            w_arc_val = self.loss_fn.w_trac_arc.item()
+            # Current adaptive weights.  The energy form has none -- that is
+            # the point of it -- so these log channels carry NaN there rather
+            # than a misleading zero.
+            if self._energy_form:
+                w_eq_val = w_top_val = w_arc_val = float("nan")
+            else:
+                w_eq_val = self.loss_fn.w_eq.item()
+                w_top_val = self.loss_fn.w_trac_top.item()
+                w_arc_val = self.loss_fn.w_trac_arc.item()
 
             # Periodic validation on fixed geometry set
             val_raw = None
@@ -363,8 +385,10 @@ class PI_GINOT_Trainer:
 
             current_lr = self.optimizer.param_groups[0]["lr"]
 
-            # Delayed adaptive weighting
+            # Delayed adaptive weighting (penalty form only: there are no
+            # relative weights to balance in the energy form)
             if (use_adaptive
+                    and not self._energy_form
                     and epoch >= adaptive_start
                     and (epoch + 1) % adaptive_every == 0):
                 self._update_adaptive_weights(
@@ -436,15 +460,27 @@ class PI_GINOT_Trainer:
                 dt = time.time() - t0
                 val_str = f"val={val_raw:.3e}" if val_raw is not None else "val=—"
                 val_h_str = ""
+                if self._energy_form:
+                    # The penalty channels are structurally absent here, so
+                    # printing five zeros would be noise. Report what is
+                    # actually being minimised.
+                    body = (f"Pi/(E|Omega|)={batch_loss.get('L_energy', 0.0):.4e} "
+                            f"L_bar={batch_loss['L_barrier']:.3e} "
+                            f"minJ3D={batch_loss.get('min_J3D', float('nan')):.4f} | "
+                            f"no relative weights")
+                else:
+                    body = (f"L_eq={batch_loss['L_eq']:.3e} "
+                            f"L_top={batch_loss['L_trac_top']:.3e} "
+                            f"L_arc={batch_loss['L_trac_arc']:.3e} "
+                            f"L_part={batch_loss['L_part']:.3e} "
+                            f"L_bar={batch_loss['L_barrier']:.3e} "
+                            f"L_res={batch_loss.get('L_resultant', 0.0):.3e} | "
+                            f"w_top={w_top_val:.1f} w_arc={w_arc_val:.1f} "
+                            f"w_res={w_res_eff:.2f}")
                 print(
                     f"Epoch {epoch+1:4d}/{epochs} | "
-                    f"loss={batch_loss['loss']:.4e} raw={raw_loss:.4e} raw+res={raw_total:.4e} | "
-                    f"L_eq={batch_loss['L_eq']:.3e} "
-                    f"L_top={batch_loss['L_trac_top']:.3e} "
-                    f"L_arc={batch_loss['L_trac_arc']:.3e} "
-                    f"L_part={batch_loss['L_part']:.3e} "
-                    f"L_bar={batch_loss['L_barrier']:.3e} L_res={batch_loss.get('L_resultant', 0.0):.3e} | "
-                    f"w_top={w_top_val:.1f} w_arc={w_arc_val:.1f} w_res={w_res_eff:.2f} | "
+                    f"loss={batch_loss['loss']:.4e} raw={raw_loss:.4e} "
+                    f"raw+res={raw_total:.4e} | {body} | "
                     f"{val_str}{val_h_str} lr={current_lr:.2e} | "
                     f"{phase} {dt:.1f}s"
                 )
@@ -546,14 +582,21 @@ class PI_GINOT_Trainer:
                                      device=self.device)
 
             with torch.enable_grad():
-                ld = self.loss_fn(
-                    self.model, interior, tf_pts, tf_norms, tf_tags,
-                    pt_pts, pt_norms, pt_dirs, bpc, u_d, x_m, y_m,
-                    sample_ids=v_sid,
-                )
+                if self._energy_form:
+                    ld = self.loss_fn(self.model, mesh.params, bpc, u_d, x_m,
+                                      y_m, sample_ids=v_sid)
+                else:
+                    ld = self.loss_fn(
+                        self.model, interior, tf_pts, tf_norms, tf_tags,
+                        pt_pts, pt_norms, pt_dirs, bpc, u_d, x_m, y_m,
+                        sample_ids=v_sid,
+                    )
 
                 # Section-resultant loss (same as training)
                 w_res = self.config.get("w_resultant", 0.0)
+                if self._energy_form and not self.config.get(
+                        "w_resultant_energy", 0.0):
+                    w_res = 0.0
                 L_res_val = 0.0
                 if w_res > 0.0:
                     L_res_val = self._compute_section_resultant_loss(
@@ -563,9 +606,17 @@ class PI_GINOT_Trainer:
                         n_y_pts=self.config.get("n_resultant_y_pts", 64),
                     ).item()
 
-            raw = (ld["L_eq_log"] + ld["L_trac_top_log"] + ld["L_trac_arc_log"]
-                   + ld["L_trac_hole_log"] + ld["L_part_log"] + ld["L_barrier_log"]
-                   + w_res * L_res_val)
+            if self._energy_form:
+                # The validation figure must be comparable across epochs, not
+                # across formulations: here it is the nondimensional energy
+                # plus the barrier, which is what is being minimised.
+                raw = (ld["L_energy_log"] + ld["L_barrier_log"]
+                       + w_res * L_res_val)
+            else:
+                raw = (ld["L_eq_log"] + ld["L_trac_top_log"]
+                       + ld["L_trac_arc_log"] + ld["L_trac_hole_log"]
+                       + ld["L_part_log"] + ld["L_barrier_log"]
+                       + w_res * L_res_val)
             raw_total += raw / n
 
         self.model.train()
@@ -657,9 +708,14 @@ class PI_GINOT_Trainer:
         self.optimizer.zero_grad()
 
         total_loss = torch.tensor(0.0, device=self.device)
+        # "L_energy" is accumulated unconditionally even though only the
+        # energy form produces it: a channel that exists on some epochs and
+        # not others is exactly the shape of the L_resultant bug fixed in
+        # f929530, and test_epoch_history_keys_match_the_epoch_summary is
+        # there to stop it recurring.
         accum = {"L_eq": 0.0, "L_trac_top": 0.0, "L_trac_arc": 0.0,
                  "L_trac_hole": 0.0, "L_part": 0.0, "L_barrier": 0.0,
-                 "L_resultant": 0.0}
+                 "L_resultant": 0.0, "L_energy": 0.0}
         # Determinant floors are minima over the batch, not means.
         mins = {"min_J2D": float("inf"), "min_J3D": float("inf")}
 
@@ -691,7 +747,7 @@ class PI_GINOT_Trainer:
             (loss_dict["loss"] / batch_size).backward()
             total_loss += loss_dict["loss"].detach() / batch_size
             for k in accum:
-                accum[k] += loss_dict[f"{k}_log"] / batch_size
+                accum[k] += loss_dict.get(f"{k}_log", 0.0) / batch_size
             for k in mins:
                 mins[k] = min(mins[k], loss_dict.get(f"{k}_log", float("inf")))
 
@@ -784,14 +840,37 @@ class PI_GINOT_Trainer:
             sample_ids = torch.tensor([idx], dtype=torch.long,
                                       device=self.device)
 
-        loss_dict = self.loss_fn(
-            self.model, interior, tf_pts, tf_norms, tf_tags,
-            pt_pts, pt_norms, pt_dirs, bpc, u_delta, x_max, y_max,
-            sample_ids=sample_ids,
-        )
+        if self._energy_form:
+            # Pi = integral Psi dV over the cached (but resampled) quadrature
+            # mesh for this geometry.  Every boundary here is hard Dirichlet,
+            # traction-free or a symmetry plane, so the external work term
+            # vanishes and this single term replaces L_eq, L_trac_* and
+            # L_part -- the traction conditions become natural BCs of the
+            # minimum.  See docs/phase2_energy_form.md.
+            loss_dict = self.loss_fn(
+                self.model, mesh.params, bpc, u_delta, x_max, y_max,
+                sample_ids=sample_ids,
+            )
+            # Keep the log keys the epoch summary expects.
+            for k in ("L_eq", "L_trac_top", "L_trac_arc", "L_trac_hole",
+                      "L_part"):
+                loss_dict.setdefault(k + "_log", 0.0)
+        else:
+            loss_dict = self.loss_fn(
+                self.model, interior, tf_pts, tf_norms, tf_tags,
+                pt_pts, pt_norms, pt_dirs, bpc, u_delta, x_max, y_max,
+                sample_ids=sample_ids,
+            )
 
         # Section-resultant loss (axial force consistency)
-        w_resultant = getattr(self, "_w_resultant_eff", self.config.get("w_resultant", 0.0))
+        # The section-resultant anchor exists to hold the force balance that
+        # the penalty form does not enforce.  Under the energy form the
+        # measured section-force error is already <= 0.5% with no anchor at
+        # all, so it is off by default there and can be re-enabled explicitly.
+        w_resultant = getattr(self, "_w_resultant_eff",
+                              self.config.get("w_resultant", 0.0))
+        if self._energy_form and not self.config.get("w_resultant_energy", 0.0):
+            w_resultant = 0.0
         if w_resultant > 0.0:
             geometry_latent = loss_dict["geometry_latent"]
             L_resultant = self._compute_section_resultant_loss(

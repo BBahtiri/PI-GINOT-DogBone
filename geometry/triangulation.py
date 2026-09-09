@@ -438,6 +438,9 @@ def cached_mesh(params: dict, h: Optional[float] = None, refine: float = 6.0,
     return hit
 
 
+_H_CACHE: Dict[tuple, float] = {}
+
+
 def h_for_budget(params: dict, target_elems: int, tol: float = 0.25,
                  max_tries: int = 6) -> float:
     """Element size giving roughly ``target_elems`` triangles.
@@ -454,6 +457,11 @@ def h_for_budget(params: dict, target_elems: int, tol: float = 0.25,
     extra builds are paid once per geometry.
     """
     from config import get_fillet_geometry
+    ck = (round(params["L_total"], 9), round(params["W_grip"], 9),
+          round(params["W_gauge"], 9), round(params["R_fillet"], 9),
+          int(target_elems))
+    if ck in _H_CACHE:
+        return _H_CACHE[ck]
     fi = get_fillet_geometry(params)
     area = fi["x_g"] * fi["H_gauge"] + (fi["L_half"] - fi["x_g"]) * fi["H_grip"]
     h = float(np.sqrt(2.0 * area / max(target_elems, 1)))
@@ -469,8 +477,10 @@ def h_for_budget(params: dict, target_elems: int, tol: float = 0.25,
         h = float(np.sqrt(lo * hi)) if n > target_elems else float(
             np.sqrt(lo * hi))
         h = float(np.sqrt(max(lo, 1e-6) * hi))
+    _H_CACHE[ck] = h
     return h
 
 
 def clear_cache() -> None:
     _MESH_CACHE.clear()
+    _H_CACHE.clear()

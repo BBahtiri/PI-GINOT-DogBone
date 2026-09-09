@@ -167,6 +167,33 @@ TRAINING_CONFIG = {
     "batch_size": 8,                # Sample 8 from bank of 128 each epoch
     "num_workers": 4,               # DataLoader workers
 
+    # Loss formulation.
+    #   'penalty' — weighted residuals: Div P = 0 plus traction penalties
+    #               (the original formulation; every number reported up to
+    #               Phase 1 was produced with it)
+    #   'energy'  — total potential energy Pi = integral Psi dV.  Every
+    #               boundary here is hard Dirichlet, traction-free or a
+    #               symmetry plane, so the external work term vanishes and
+    #               this one term replaces w_equilibrium, w_trac_top,
+    #               w_trac_arc and w_traction_partial; the traction
+    #               conditions become natural BCs of the minimum.
+    #               Measured against the FEM reference on three geometries:
+    #               u 12.5x better, von Mises 5.6x, section force <= 0.5%,
+    #               and 3.4-5.1x cheaper per epoch.  See
+    #               docs/phase2_energy_form.md.
+    #               Default stays 'penalty' until the operator is retrained,
+    #               so existing results remain comparable.
+    "loss_form": "penalty",
+    "energy_quad_degree": 2,        # fixed-rule degree (unused when resampling)
+    "energy_n_elem": 1400,          # quadrature triangles per geometry
+    "energy_resample": True,        # stratified resampling — DO NOT disable:
+                                    # a fixed rule collapses (Pi/Pi_ref -> 0.007
+                                    # while the field gets 3x worse)
+    "energy_n_per_elem": 3,         # stratified samples per triangle
+    "w_resultant_energy": 0.0,      # section anchor under the energy form; the
+                                    # measured force error is already <= 0.5%
+                                    # without it
+
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline
     "w_trac_top": 2.0,              # Reduced: equilibrium + resultant should drive learning

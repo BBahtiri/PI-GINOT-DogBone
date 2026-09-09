@@ -169,20 +169,39 @@ def main():
     print(f"  Stress formulation: {stress_state}")
 
     # Loss
-    loss_fn = PhysicsLoss(
-        mu=MATERIAL_CONFIG["mu"],
-        lam=MATERIAL_CONFIG["lam"],
-        w_equilibrium=config["w_equilibrium"],
-        w_trac_top=config["w_trac_top"],
-        w_trac_arc=config["w_trac_arc"],
-        w_traction_partial=config["w_traction_partial"],
-        w_barrier=config["w_barrier"],
-        j_min=config["barrier_delta"],
-        adaptive_beta=config["adaptive_beta"],
-        L0=NONDIM_SCALES["L0"],
-        S0=NONDIM_SCALES["S0"],
-        stress_state=stress_state,
-    )
+    loss_form = config.get("loss_form", "penalty")
+    if loss_form == "energy":
+        from physics.weak_form import EnergyLoss
+        loss_fn = EnergyLoss(
+            mu=MATERIAL_CONFIG["mu"],
+            lam=MATERIAL_CONFIG["lam"],
+            stress_state=stress_state,
+            quad_degree=config.get("energy_quad_degree", 2),
+            n_elem_target=config.get("energy_n_elem", 1400),
+            resample=config.get("energy_resample", True),
+            n_per_elem=config.get("energy_n_per_elem", 3),
+            w_barrier=config["w_barrier"],
+            j_min=config["barrier_delta"],
+            E_scale=NONDIM_SCALES["S0"],
+        )
+    elif loss_form == "penalty":
+        loss_fn = PhysicsLoss(
+            mu=MATERIAL_CONFIG["mu"],
+            lam=MATERIAL_CONFIG["lam"],
+            w_equilibrium=config["w_equilibrium"],
+            w_trac_top=config["w_trac_top"],
+            w_trac_arc=config["w_trac_arc"],
+            w_traction_partial=config["w_traction_partial"],
+            w_barrier=config["w_barrier"],
+            j_min=config["barrier_delta"],
+            adaptive_beta=config["adaptive_beta"],
+            L0=NONDIM_SCALES["L0"],
+            S0=NONDIM_SCALES["S0"],
+            stress_state=stress_state,
+        )
+    else:
+        raise ValueError(f"Unknown loss_form {loss_form!r}; expected "
+                         "'penalty' or 'energy'.")
 
     # Trainer
     trainer = PI_GINOT_Trainer(
