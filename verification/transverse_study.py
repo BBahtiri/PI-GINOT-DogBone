@@ -59,6 +59,7 @@ from eval.compare_reference import compare_one
 from geometry.banks import VAL_BANK_SEED, build_geometry_bank
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
+from physics.weak_form import EnergyLoss, reference_energy
 from training.manifest import set_deterministic, write_manifest
 from verification.fem.mesh import build_mesh, default_h
 from verification.fem.solver import solve as fem_solve
@@ -82,10 +83,15 @@ def weight_overrides(name: str) -> dict:
         return dict(WEIGHT_SETS[name])
     if name.startswith("wtop="):
         return {"w_trac_top": float(name.split("=", 1)[1])}
-    if name == "fresh":
+    if name in ("fresh", "energy", "energy-fresh", "energy-fixed"):
         return {}
     raise ValueError(f"unknown run {name!r}; expected one of "
-                     f"{sorted(WEIGHT_SETS)}, 'fresh', or 'wtop=<value>'")
+                     f"{sorted(WEIGHT_SETS)}, 'fresh', 'wtop=<value>', "
+                     "'energy', 'energy-fixed' or 'energy-fresh'")
+
+
+def is_energy(name: str) -> bool:
+    return name.startswith("energy")
 
 
 def _tensors(coll, device, u_delta, sample_id):
@@ -130,35 +136,70 @@ def run_one(name: str, params: dict, coll, sol, checkpoint, epochs: int,
     overrides = weight_overrides(name)
     from_scratch = name == "fresh"
 
+    from_scratch = from_scratch or name == "energy-fresh"
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
     if not from_scratch:
         ck = torch.load(checkpoint, map_location=device, weights_only=False)
         model.load_state_dict(
             PI_GINOT.strip_legacy_keys(ck["model_state_dict"])[0])
 
-    loss_fn, cfg = _make_loss(overrides, device)
+    cfg = dict(TRAINING_CONFIG)
+    cfg.update(overrides)
+    energy_mode = is_energy(name)
+    if energy_mode:
+        loss_fn = EnergyLoss(
+            mu=MU, lam=LAM, stress_state=STATE, quad_degree=2,
+            resample=(name != "energy-fixed"),
+            w_barrier=cfg["w_barrier"], j_min=cfg["barrier_delta"],
+            E_scale=MATERIAL_CONFIG["E"]).to(device)
+    else:
+        loss_fn, cfg = _make_loss(overrides, device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     u_delta = LOADING_CONFIG["u_max"]
     t = _tensors(coll, device, u_delta, sample_id)
+    pi_ref = reference_energy(sol, MU, LAM, STATE)
 
     def measure():
         return compare_one(model, params, u_delta, None, device,
                            sample_id=sample_id, coll=coll, sol=sol)
+
+    def energy_excess():
+        """(Pi_model - Pi_reference) / Pi_reference.
+
+        Pi >= Pi_exact for any field meeting the Dirichlet conditions, so this
+        is a one-sided measure of distance from the solution -- unlike a
+        residual, it cannot be small for the wrong reason.
+        """
+        with torch.no_grad():
+            z = model.encode(t["bpc"], t["x_m"], t["y_m"],
+                             sample_ids=t["sid"])
+        Pi = loss_fn.energy(model, params, z, t["u_d"], t["x_m"],
+                            t["y_m"])[0] if energy_mode else None
+        if Pi is None:
+            e = EnergyLoss(mu=MU, lam=LAM, stress_state=STATE, quad_degree=2,
+                           E_scale=MATERIAL_CONFIG["E"]).to(device)
+            Pi = e.energy(model, params, z, t["u_d"], t["x_m"], t["y_m"])[0]
+        return float(Pi.detach()) / pi_ref - 1.0
 
     hist = []
     m = measure()
     hist.append({"epoch": 0, "u": m["disp_u_rel_L2"], "v": m["disp_v_rel_L2"],
                  "vm": m["vm_all"]["rel_L2"],
                  "s22": m["s22_all"]["rms_over_scale"],
-                 "N_err": m["N_rel_err"], "loss": None})
+                 "N_err": m["N_rel_err"], "dPi": energy_excess(),
+                 "loss": None})
     t0 = time.time()
     for epoch in range(1, epochs + 1):
         model.train()
         opt.zero_grad()
-        ld = loss_fn(model, t["interior"], t["tf_pts"], t["tf_norms"],
-                     t["tf_tags"], t["pt_pts"], t["pt_norms"], t["pt_dirs"],
-                     t["bpc"], t["u_d"], t["x_m"], t["y_m"],
-                     sample_ids=t["sid"])
+        if energy_mode:
+            ld = loss_fn(model, params, t["bpc"], t["u_d"], t["x_m"],
+                         t["y_m"], sample_ids=t["sid"])
+        else:
+            ld = loss_fn(model, t["interior"], t["tf_pts"], t["tf_norms"],
+                         t["tf_tags"], t["pt_pts"], t["pt_norms"],
+                         t["pt_dirs"], t["bpc"], t["u_d"], t["x_m"],
+                         t["y_m"], sample_ids=t["sid"])
         ld["loss"].backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(),
                                        cfg["grad_clip_norm"])
@@ -168,13 +209,14 @@ def run_one(name: str, params: dict, coll, sol, checkpoint, epochs: int,
             hist.append({"epoch": epoch, "u": m["disp_u_rel_L2"],
                          "v": m["disp_v_rel_L2"], "vm": m["vm_all"]["rel_L2"],
                          "s22": m["s22_all"]["rms_over_scale"],
-                         "N_err": m["N_rel_err"],
+                         "N_err": m["N_rel_err"], "dPi": energy_excess(),
                          "loss": float(ld["loss"].item())})
             h = hist[-1]
             print(f"    [{name}] epoch {epoch:5d}  loss={h['loss']:.3e}  "
                   f"u={h['u']:.3e}  v={h['v']:.3e}  vm={h['vm']:.3e}  "
                   f"s22={h['s22']:.3e}  N={100 * h['N_err']:+.1f}%  "
-                  f"[{time.time() - t0:.0f}s]", flush=True)
+                  f"dPi={100 * h['dPi']:+.1f}%  [{time.time() - t0:.0f}s]",
+                  flush=True)
     return {"name": name, "overrides": overrides, "history": hist,
             "wall_s": time.time() - t0}
 
@@ -254,14 +296,16 @@ def main():
     print("\n" + "=" * 84)
     print("Final errors against the finite-element reference")
     print(f"{'geo':>5}{'taper':>7}{'run':>14}{'u rel L2':>11}"
-          f"{'v rel L2':>11}{'vm rel L2':>11}{'s22/peak':>11}{'N err':>9}")
-    print("-" * 80)
+          f"{'v rel L2':>11}{'vm rel L2':>11}{'s22/peak':>11}{'N err':>9}"
+          f"{'dPi':>9}")
+    print("-" * 89)
     for gi, block in all_results.items():
         for r in block["runs"]:
             b = r["history"][-1]
             print(f"{gi:>5}{block['taper']:>7.2f}{r['name']:>14}"
                   f"{b['u']:>11.3e}{b['v']:>11.3e}{b['vm']:>11.3e}"
-                  f"{b['s22']:>11.3e}{100 * b['N_err']:>8.1f}%")
+                  f"{b['s22']:>11.3e}{100 * b['N_err']:>8.1f}%"
+                  f"{100 * b['dPi']:>8.1f}%")
 
     if len(geos) > 1 and len(run_names) == 2:
         base, alt = run_names

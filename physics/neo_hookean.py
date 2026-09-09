@@ -225,6 +225,62 @@ def solve_F33_plane_stress(J2D: torch.Tensor, mu, lam,
     return F33
 
 
+def strain_energy_density(
+    du_dx: torch.Tensor,
+    du_dy: torch.Tensor,
+    dv_dx: torch.Tensor,
+    dv_dy: torch.Tensor,
+    mu: float,
+    lam: float,
+    stress_state: str = None,
+) -> torch.Tensor:
+    """Neo-Hookean strain energy density.
+
+        W = (mu/2)(tr C - 3) - mu ln J + (lam/2)(ln J)^2
+
+    For plane strain, F33 = 1 and J = J2D.
+
+    For plane stress this returns the **reduced** energy: F33 is eliminated by
+    the P33 = 0 closure, so W is a function of the in-plane F alone.  That is
+    the correct object to minimise, and it has a property worth stating,
+    because it is what makes the energy form and the stress form consistent:
+
+        dW_reduced/dF = dW/dF + (dW/dF33)(dF33/dF) = dW/dF = P
+
+    The second term vanishes because F33 is chosen to make dW/dF33 = P33 = 0.
+    That is the envelope theorem, and it means the gradient of the reduced
+    energy *is* the plane-stress first Piola-Kirchhoff stress -- no separate
+    derivation, and no inconsistency between the two formulations.  Autograd
+    still differentiates through the closure, but that path is multiplied by a
+    residual the solver drives to ~1e-16, so it contributes nothing.
+    ``tests/test_physics.py::test_energy_gradient_is_the_stress`` checks it.
+
+    Args:
+        du_dx, du_dy, dv_dx, dv_dy: [B, N, 1] displacement gradients.
+        mu, lam: Lame parameters.
+        stress_state: 'plane strain' or 'plane stress'.  Required.
+
+    Returns:
+        W: [B, N, 1] energy density [MPa] (energy per unit reference volume).
+    """
+    require_stress_state(stress_state)
+
+    F11, F12, F21, F22, J2D = deformation_gradient(du_dx, du_dy, dv_dx, dv_dy)
+    J2D_safe = torch.clamp(J2D, min=_DETF_MIN)
+    trC_2d = F11 ** 2 + F12 ** 2 + F21 ** 2 + F22 ** 2
+
+    if stress_state == "plane stress":
+        F33 = solve_F33_plane_stress(J2D, mu, lam)
+        J = torch.clamp(J2D_safe * F33, min=_DETF_MIN)
+        trC = trC_2d + F33 ** 2
+    else:
+        J = J2D_safe
+        trC = trC_2d + 1.0
+
+    logJ = torch.log(J)
+    return 0.5 * mu * (trC - 3.0) - mu * logJ + 0.5 * lam * logJ ** 2
+
+
 def first_piola_kirchhoff_stress(
     du_dx: torch.Tensor,
     du_dy: torch.Tensor,

@@ -598,3 +598,131 @@ def test_measure_consistent_flag_fixes_the_boundary_split():
         params, n_pts_per_segment=400, rng=np.random.default_rng(0),
         measure_consistent=mc).boundary_segments)
     assert tot(False) == tot(True)
+
+
+# ---------------------------------------------------------- energy form --
+
+def test_energy_gradient_is_the_stress():
+    """dPsi/dF must equal P, for both stress states.
+
+    Under plane stress this is the envelope theorem: Psi is the *reduced*
+    energy with F33 eliminated by P33 = 0, so the dF33/dF path is multiplied
+    by a residual the closure drives to ~1e-16 and contributes nothing. If
+    this ever fails, the energy form and the stress form have diverged and
+    every comparison between them is meaningless.
+    """
+    from physics.neo_hookean import strain_energy_density
+
+    for state in ("plane stress", "plane strain"):
+        a = _grads(*[None] * 4, seed=13, scale=0.12, n=256)
+        a = [t.clone().requires_grad_(True) for t in a]
+        W = strain_energy_density(*a, MU, LAM, state)
+        grads = torch.autograd.grad(W.sum(), a)
+        P = first_piola_kirchhoff_stress(*a, MU, LAM, state)[:4]
+        scale = max(p.abs().max().item() for p in P)
+        err = max((g - p).abs().max().item() for g, p in zip(grads, P))
+        assert err / scale < 1e-13, state
+
+
+@pytest.mark.parametrize("state", ["plane stress", "plane strain"])
+def test_energy_vanishes_for_rigid_motion(state):
+    """Psi = 0 at F = I and under a finite rigid rotation (objectivity)."""
+    from physics.neo_hookean import strain_energy_density
+
+    z = torch.zeros(1, 8, 1, dtype=torch.float64)
+    assert strain_energy_density(z, z, z, z, MU, LAM, state).abs().max() == 0.0
+
+    th = 0.4
+    c, s = np.cos(th), np.sin(th)
+    H = np.array([[c - 1.0, -s], [s, c - 1.0]])
+    g = [torch.full((1, 4, 1), H[i, j], dtype=torch.float64)
+         for i, j in ((0, 0), (0, 1), (1, 0), (1, 1))]
+    assert strain_energy_density(*g, MU, LAM, state).abs().max() < 1e-14
+
+
+def test_energy_matches_the_closed_form_uniaxial():
+    """Psi under a homogeneous laterally-free stretch, against the 3D form."""
+    from physics.neo_hookean import strain_energy_density
+
+    l1 = 1.05
+    beta = float(uniaxial_lateral_stretch(l1, MU, LAM))
+    g = [torch.tensor([[[l1 - 1.0]]], dtype=torch.float64),
+         torch.zeros(1, 1, 1, dtype=torch.float64),
+         torch.zeros(1, 1, 1, dtype=torch.float64),
+         torch.tensor([[[beta - 1.0]]], dtype=torch.float64)]
+    W = strain_energy_density(*g, MU, LAM, "plane stress").item()
+
+    J = l1 * beta * beta
+    trC = l1 ** 2 + 2.0 * beta ** 2
+    ref = 0.5 * MU * (trC - 3.0) - MU * np.log(J) + 0.5 * LAM * np.log(J) ** 2
+    assert abs(W - ref) / abs(ref) < 1e-12
+
+
+def test_stratified_quadrature_is_unbiased_and_moves():
+    """Weights must reproduce the exact area, points must stay inside and
+    must differ between draws.
+
+    The last one is the load-bearing property: with a *fixed* rule the
+    optimiser drives the quadrature sum to zero while the field diverges --
+    Pi/Pi_ref fell to 0.007 over 300 epochs while the von Mises error grew
+    from 0.085 to 2.70. See docs/phase2_energy_form.md.
+    """
+    from geometry.parametric_dogbone import _point_in_dogbone
+    from physics.weak_form import EnergyLoss
+
+    fi = get_fillet_geometry(GEOMETRY_DEFAULT)
+
+    def outside_fraction(target, n_draw=8):
+        el = EnergyLoss(mu=MU, lam=LAM,
+                        stress_state=MATERIAL_CONFIG["state"],
+                        resample=True, n_per_elem=3, n_elem_target=target)
+        mesh = el._mesh(GEOMETRY_DEFAULT)
+        fracs, draws = [], []
+        for _ in range(n_draw):
+            pts, w = el._stratified(mesh)
+            assert abs(w.sum() - mesh.areas.sum()) < 1e-9 * mesh.areas.sum()
+            fracs.append(float(
+                (~_point_in_dogbone(pts[:, 0], pts[:, 1], fi)).mean()))
+            draws.append(pts)
+        return float(np.mean(fracs)), draws
+
+    # Points are not all strictly inside: along the fillet the material lies
+    # *outside* the arc's circle, so a straight triangle edge between two arc
+    # nodes cuts into the void.  The escaped fraction is small and shrinks
+    # under refinement -- which is what makes it a discretisation artefact
+    # rather than a bug.
+    coarse, _ = outside_fraction(400)
+    fine, draws = outside_fraction(1400)
+    assert fine < 3e-3
+    assert fine < coarse
+
+    assert not np.allclose(draws[0], draws[1])
+    assert not np.allclose(draws[1], draws[2])
+
+
+def test_energy_quadrature_converges():
+    """The integral is resolved: refining the mesh barely moves Pi.
+
+    Guards the other side of the trade -- the quadrature has to be accurate
+    enough that a lower energy means a better field, not a coarser rule.
+    """
+    from physics.weak_form import EnergyLoss
+
+    torch.manual_seed(0)
+    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).eval()
+    mesh = generate_dogbone(GEOMETRY_DEFAULT, rng=np.random.default_rng(0))
+    coll = sample_collocation_points(mesh, n_interior=1,
+                                     rng=np.random.default_rng(1))
+    bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32).unsqueeze(0)
+    x_m = torch.tensor([coll.x_max])
+    y_m = torch.tensor([coll.y_max])
+    u_d = torch.tensor([1.0])
+    with torch.no_grad():
+        z = model.encode(bpc, x_m, y_m, sample_ids=torch.tensor([0]))
+
+    el = EnergyLoss(mu=MU, lam=LAM, stress_state=MATERIAL_CONFIG["state"],
+                    resample=False, quad_degree=2, n_elem_target=800)
+    err = el.integration_error(model, GEOMETRY_DEFAULT, z, u_d, x_m, y_m,
+                               refine=2.0)
+    assert err["rel_mesh"] < 5e-3
+    assert err["rel_rule"] < 5e-3
