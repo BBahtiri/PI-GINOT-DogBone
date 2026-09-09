@@ -191,9 +191,64 @@ that bought a real fix would still be worth it.
 
 `energy-abs-*` vary `w_resultant_abs_energy` over 0.03 / 0.3 / 3, chosen so the
 anchor term lands at roughly 10%, 100% and 1000% of the reducible energy, and
-against the calibrated target so the target's own 2.5% bias is out of the way.
+against the calibrated target — which is **0.44% from the FEM reference** on
+these five geometries, so the target itself is not the problem.
 
-*(running)*
+| `w_resultant_abs_energy` | u | v | vm | \|N err\| |
+|---|---|---|---|---|
+| 0 (control) | **2.58e-02** | **3.58e-01** | **8.43e-02** | **4.25%** |
+| 0.03 | 2.05e-02 | 4.24e-01 | 9.98e-02 | 4.62% |
+| 0.3 | 3.91e-02 | 4.12e-01 | 1.71e-01 | 9.34% |
+| 3 | 1.04e-01 | 6.53e-01 | 2.98e-01 | 5.03% |
+
+**Weighting the anchor correctly makes the force error worse, monotonically,
+up to the point where it destroys the field.** A term that directly penalises
+the force error increases the force error. Something is wrong with the premise,
+not the weight.
+
+## What was actually wrong: it is a generalisation gap, not a bias
+
+Measured against the calibrated closed-form target, on the **training**
+geometries and the held-out ones:
+
+| model | train \|err\| | held-out \|err\| |
+|---|---|---|
+| energy, no anchor | **0.39%** | 2.93% |
+| energy + anchor 0.03 | 1.60% | 4.17% |
+| energy + anchor 0.3 | 6.31% | 8.78% |
+| penalty form | 3.33% | **1.75%** |
+
+**The unanchored energy form already gets the force right to 0.39% on the
+geometries it trained on.** Phase 2's ≤0.5% was not a single-geometry artifact
+at all — it holds on every training geometry in the bank. The held-out 2.9% is
+the operator failing to *carry* that accuracy to an unseen shape.
+
+Which is why no anchor could ever have helped. An anchor is a training-time
+penalty on a quantity that is already accurate to 0.39% at training time.
+There is nothing left for it to reduce; all it can do is fight the energy
+gradient, and the table above is what that looks like. Every hypothesis I
+tested before this one — biased target, coarse quadrature, mismatched section
+sets — was a search for a bias that does not exist.
+
+The comparison with the penalty form is the substantive finding. The energy
+form fits the training force **8.5× better** (0.39% vs 3.33%) and transfers it
+**1.7× worse** (2.93% vs 1.75%). That is overfitting of the force functional,
+and it has a plausible mechanism: the penalty form's residuals are *pointwise,
+geometry-local* conditions that the network has to satisfy as a property of the
+field, while Π is a **single scalar per geometry** that the encoder can drive
+down by tuning the latent shape-by-shape. The first generalises by
+construction; the second need not. This is a hypothesis, not a result — it
+predicts that the gap should shrink with a larger training bank, which is the
+test worth running next and is cheap relative to what has been spent here.
+
+Three things follow for the plan:
+
+1. **Do not add a force anchor to the energy form.** Not at any weight. It
+   targets a quantity that is not wrong where the loss can see it.
+2. **The energy form's force regression is a bank-size question**, not a loss
+   design question. Try 32 and 64 training geometries before touching the loss.
+3. The stress advantage (≈2×, robust to the budget definition) is unaffected by
+   any of this and stands on its own.
 
 ## Caveats
 
@@ -204,29 +259,22 @@ transverse numbers in particular should be read as *"where each form is after
 40 minutes"*, not as floors.
 
 **Equal wall-clock is a choice, and it favours the energy form** by giving it
-5× the epochs — but the advantage is not an artifact of the budget. The
-anchor sweep's control arm is the same energy form at **400 epochs**, which is
-within 15% of the penalty arm's 350:
-
-| at ~350–400 epochs | energy | penalty | ratio |
-|---|---|---|---|
-| u rel L2 | **2.58e-02** | 3.24e-02 | 0.80 |
-| v rel L2 | 3.58e-01 | **3.13e-01** | 1.14 |
-| von Mises rel L2 | **8.43e-02** | 1.57e-01 | **0.54** |
-| section-force \|err\| | 4.24% | **2.47%** | 1.72 |
-
-Every sign is the same as the wall-clock comparison, and the stress advantage
-is still ~1.9×. What the extra 1350 epochs buy is small: energy goes from
-2.58e-02 to 1.94e-02 on `u` and 8.43e-02 to 7.18e-02 on `vm`, and **`v` does
-not move at all** (3.58e-01 → 3.54e-01). The energy form is close to flat at
-operator scale by 400 epochs. The penalty form's trajectory past 350 is
-unmeasured, so this is not a claim that energy stays ahead at 1750 each.
+5× the epochs — but the advantage is not an artifact of the budget, as the
+epoch-matched table above shows.
 
 **Moderate taper only** (0.436–0.549). The extremes, where Phase 1 found the
 error largest, are not represented.
 
 **A single seed, a single bank size, a single learning rate.** Nothing here
-separates the formulations from their interaction with `lr = 3e-4`.
+separates the formulations from their interaction with `lr = 3e-4` — and the
+bank-size hypothesis above is precisely a claim that one of these matters.
+
+**The train/held-out force table uses 8 training and 5 held-out geometries**
+against the closed-form target rather than FEM. The target is 0.44% from FEM
+on the held-out set, which is fine for a 3% effect, but the penalty form's
+*negative* gap (better held-out than train) is within what samples this small
+and taper mixes this different can produce. The direction and size of the
+energy form's gap are not.
 
 **The bank draw is not reproducible across collocation settings.** The
 parameter draw, the mesh generation and the collocation sampling share one RNG
@@ -234,6 +282,6 @@ stream in `build_geometry_bank`, so changing `n_interior` changes which
 specimens a seed produces. `geometry/banks.py` documents this and centralises
 the draw, but centralising is not the same as fixing it: "validation geometry
 11" in this document and in `docs/phase1_*.md` are **different shapes**. The
-comparison *within* this run is unaffected — both arms and the reference share
+comparison *within* this run is unaffected — every arm and the reference share
 one draw — but no geometry index should be carried between documents. Taper
 ratios are reported alongside every index for exactly this reason.
