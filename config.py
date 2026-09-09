@@ -218,14 +218,27 @@ TRAINING_CONFIG = {
     "n_resultant_slices": 16,       # Number of vertical slices for resultant
     "n_resultant_y_pts": 128,       # Points per slice for integration
 
-    # Section-resultant anchoring (see physics/uniaxial.py).
+    # Section-resultant anchoring (see physics/uniaxial.py).  Errors below are
+    # against the finite-element reference (verification/fem) on the
+    # 24-geometry validation bank -- NOT against each other.  Measuring the
+    # anchors against one another is what produced the withdrawn "5-30% low"
+    # figure for the legacy form: `series` itself runs ~2.5% high, so the two
+    # errors were being added instead of netted.
+    #                                          mean |err|   max |err|
     #   'series'       — 1D varying-section finite-strain solve  [default]
-    #   'series_calibrated' — the same, x0.97517 fitted against the FEM
-    #                    reference on the training bank; mean error against
-    #                    FEM 2.55% -> 0.74%, max 5.15% -> 2.54%. Makes the
-    #                    anchor weakly reference-dependent, so it is opt-in.
-    #   'uniform'      — finite-strain uniform bar at average stretch
-    #   'small_strain' — legacy E*(u/L)*2H, biased low by 5-30%  [ablation]
+    #                                              2.49%       5.07%
+    #   'series_calibrated' — the same, x0.97517 fitted against the reference
+    #                    on the TRAINING bank, so the validation numbers below
+    #                    are held out.  Makes the anchor weakly
+    #                    reference-dependent, so it is opt-in.
+    #                                              0.74%       2.54%
+    #   'uniform'      — finite-strain uniform bar at average stretch.
+    #                    Corrects the linearisation but not the varying
+    #                    section, which is the larger term and the other way,
+    #                    so it is worse than doing nothing.   [ablation]
+    #                                              6.02%      13.46%
+    #   'small_strain' — legacy E*(u/L)*2H                     [ablation]
+    #                                              3.60%      10.96%
     #   'none'         — rely on reaction self-consistency alone
     "resultant_anchor": "series",
     "w_resultant_anchor": 0.5,      # Weight of the absolute anchor term

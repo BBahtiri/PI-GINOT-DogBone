@@ -96,10 +96,21 @@ def _build_loss(form: str, c: dict):
 
 def train_operator(form: str, minutes: float, bank: int, batch: int,
                    lr: float, device: str, seed: int, out: str,
-                   n_interior: int, chunk_epochs: int = 25):
-    """Train one operator under a wall-clock budget, in short fit() chunks."""
+                   n_interior: int, chunk_epochs: int = 25,
+                   overrides: dict = None, colloc_overrides: dict = None,
+                   tag: str = None):
+    """Train one operator under a wall-clock budget, in short fit() chunks.
+
+    ``overrides`` / ``colloc_overrides`` let an ablation change one lever and
+    nothing else; both are applied *before* the loss object is built, so a
+    lever the loss reads (w_trac_top, the barrier) actually takes effect.
+    Note that ``colloc_overrides`` mutates the module-level config -- the
+    caller is responsible for restoring it between arms.
+    """
     set_deterministic(seed)
     cfg.COLLOCATION_CONFIG["n_interior"] = n_interior
+    if colloc_overrides:
+        cfg.COLLOCATION_CONFIG.update(colloc_overrides)
     from training.trainer import PI_GINOT_Trainer
 
     c = dict(TRAINING_CONFIG)
@@ -108,11 +119,13 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
              save_geo=False, adaptive_start_epoch=10 ** 6,
              loss_form=form, learning_rate=lr, epochs=chunk_epochs,
              barrier_warmup_epochs=0)
+    if overrides:
+        c.update(overrides)
 
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
     tr = PI_GINOT_Trainer(model=model, loss_fn=_build_loss(form, c),
                           config=c, device=device,
-                          save_dir=os.path.join(out, form))
+                          save_dir=os.path.join(out, tag or form))
 
     t0 = time.time()
     deadline = t0 + minutes * 60.0
@@ -122,7 +135,7 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
         tr.fit(epochs=chunk_epochs, print_every=10 ** 6)
         epochs += chunk_epochs
     wall = time.time() - t0
-    print(f"  [{form}] {epochs} epochs in {wall / 60:.1f} min "
+    print(f"  [{tag or form}] {epochs} epochs in {wall / 60:.1f} min "
           f"({wall / max(epochs, 1):.2f} s/epoch)", flush=True)
     return model, epochs, wall
 
