@@ -259,6 +259,21 @@ everything else identical, bank 16 → 32 → 64:
 again changes neither. The regression against the penalty form is gone at bank
 32 — and it was never a property of the formulation.
 
+And the control says the effect belongs to the energy form specifically. The
+penalty form at bank 32, same 400 epochs, is **unchanged on every metric**:
+
+| penalty form | u | v | vm | vm fillet | \|N err\| | force gap |
+|---|---|---|---|---|---|---|
+| bank 16 | 3.24e-02 | 3.13e-01 | 1.57e-01 | 2.23e-01 | 2.47% | −1.58 |
+| bank 32 | 3.38e-02 | 3.19e-01 | 1.60e-01 | 2.24e-01 | 2.46% | −1.29 |
+
+Twice the training geometries buys the penalty form nothing, while the energy
+form gains 2× on `u` and 1.9× on the force. So the two formulations do not
+merely differ in accuracy at a fixed budget — **they differ in how they use
+data.** At bank 32 the energy form is 2.6× better on von Mises, 2.6× better at
+the fillet, 2.6× better on `u`, and level on the force; the only quantity where
+it still loses is `v`.
+
 The gap is also **insensitive to training length and sensitive to bank size**,
 which is the signature that distinguishes the two explanations. The bank-16
 energy model measured at 400 epochs and at 1750 epochs gives gaps of 2.43 and
@@ -301,11 +316,9 @@ error largest, are not represented.
 **A single seed and a single learning rate.** Nothing here separates the
 formulations from their interaction with `lr = 3e-4`.
 
-**The bank sweep is energy-only.** The penalty form was measured at bank 16
-alone, so the bank-32 rows are not a like-for-like comparison against it —
-the penalty form may improve with bank size too. The claim the sweep supports
-is about the *energy form's own* train→held-out gap, which is measured against
-itself and needs no such control.
+**The bank sweep covers two sizes for the penalty form and three for the
+energy form**, at one seed each. That the penalty form is flat from 16 to 32 is
+one measurement, not a trend, and neither form was tested past 64.
 
 **The train/held-out force table uses 8 training and 5 held-out geometries**
 against the closed-form target rather than FEM. The target is 0.44% from FEM
