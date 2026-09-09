@@ -144,6 +144,22 @@ ARMS = {
     # The weight is swept around 183 rather than guessed: at w = 1 the term is
     # ~30% of the reducible energy, and equalising the transverse curvature
     # with the axial one needs roughly the curvature ratio.
+    # The high sweep (10/100/1000) degraded everything monotonically while
+    # barely moving v, and the reason is that the weight was sized from a
+    # *value* ratio -- L_trac_top ~30% of the reducible energy at w = 1 -- when
+    # what matters is curvature.  Even w = 10 puts the traction term ~7x the
+    # reducible energy at the first epoch, so the whole high sweep was in the
+    # over-dominant regime and never tested the hypothesis.  These arms sweep
+    # below it.
+    "energy-trac-0.03": (
+        "energy", {"energy_w_trac_top": 0.03}, {},
+        "gauge-top traction well below the energy's own scale"),
+    "energy-trac-0.3": (
+        "energy", {"energy_w_trac_top": 0.3}, {},
+        "gauge-top traction at ~10% of the reducible energy"),
+    "energy-trac-3": (
+        "energy", {"energy_w_trac_top": 3.0}, {},
+        "gauge-top traction comparable to the reducible energy"),
     "energy-trac-10": (
         "energy", {"energy_w_trac_top": 10.0}, {},
         "gauge-top traction restored, an order below the predicted weight"),

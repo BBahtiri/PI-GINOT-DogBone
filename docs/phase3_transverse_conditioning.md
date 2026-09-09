@@ -113,6 +113,75 @@ directly the evidence supports them:
    symptom.** A 183× curvature ratio is what preconditioning and second-order
    methods exist for, and it would not need a hand-chosen weight.
 
+## The fix that follows from it does not work
+
+Point 2 above — restore the gauge-top traction term to the energy form — is
+the principled move: redundant at the minimiser, so it cannot bias the answer,
+and it is the one term Phase 1 identified as carrying transverse information.
+`EnergyLoss` gained `w_trac_top` (off by default) and the weight was swept over
+**4.5 orders of magnitude**, bank 32, 400 epochs, everything else fixed:
+
+| `energy_w_trac_top` | u | v | vm | vm fillet | \|N err\| |
+|---|---|---|---|---|---|
+| 0 (control) | **1.277e-02** | 3.507e-01 | **6.229e-02** | **8.501e-02** | 2.23% |
+| 0.03 | 1.278e-02 | 3.459e-01 | 6.316e-02 | 8.652e-02 | 2.17% |
+| 0.3 | 1.336e-02 | 3.830e-01 | 6.657e-02 | 9.290e-02 | 2.13% |
+| 3 | 1.461e-02 | 3.933e-01 | 8.763e-02 | 1.290e-01 | **2.04%** |
+| 10 | 3.387e-02 | **3.279e-01** | 1.639e-01 | 2.486e-01 | 4.90% |
+| 100 | 5.054e-02 | 3.344e-01 | 1.973e-01 | 3.029e-01 | 8.27% |
+| 1000 | 5.999e-02 | 3.562e-01 | 2.155e-01 | 3.272e-01 | 9.39% |
+
+**`v` never leaves ±10% of the control, and not monotonically** — 0.346, 0.383,
+0.393, 0.328, 0.334, 0.356 against 0.351. That spread is smaller than the
+spread between geometries within a single arm. Meanwhile `u` degrades 4.7× and
+von Mises 3.5× at the top of the range. The best `v` in the table, 0.328 at
+w = 10, comes with `u` 2.7× worse and stress 2.6× worse: not a trade anyone
+would take.
+
+(One real if minor effect: the force error improves slightly at low weight,
+2.23% → 2.04%, which is the traction term doing what it should — carrying
+equilibrium information — just not about `v`.)
+
+### Why adding the term does not add the curvature
+
+I sized the first weights from a **value** ratio — `L_trac_top` is ~30% of the
+reducible energy at w = 1 — and predicted the useful weight would be near the
+curvature ratio, ~183. That was the wrong quantity: even w = 10 puts the
+traction term at ~7× the reducible energy in the first epoch, so the entire
+first sweep sat in the over-dominant regime and never tested the hypothesis.
+The second sweep went below it, and found nothing there either.
+
+The reason is visible in what degrades. The gauge-top traction residual is
+`P·N` with `N = +y`, i.e. `P12` and `P22`, and those depend on gradients of
+**both** components. It is not a transverse constraint that happens to be
+weighted low — it is a mixed constraint, so raising its weight adds curvature
+in `u` at least as fast as in `v`, and the axial error is what moves. Phase 1's
+1.46× from the same lever under the penalty form was not a starting point to
+build on; it was the whole effect available.
+
+### What this rules out
+
+**Loss-side reweighting cannot fix this.** That is now measured in both
+formulations: `w_trac_top` under the penalty form (Phase 1, 1.46×) and the same
+term restored to the energy form (here, nothing across 4.5 orders of
+magnitude). A curvature ratio of 183 is a property of the physical operator,
+and adding a penalty term does not precondition an operator — it replaces it
+with a different, generally worse-conditioned one.
+
+What remains is optimiser-side or supervision:
+
+1. **A scale-invariant optimiser** — preconditioned, natural-gradient, or
+   second-order. This addresses the cause rather than reweighting around it,
+   and needs no hand-chosen constant. It is the direction the evidence
+   actually supports.
+2. **Supervise `v` directly** where a reference is available. The finite-element
+   solver built in Phase 1 can generate one per bank geometry, and a hybrid
+   physics+data objective would sidestep the conditioning entirely — at the
+   cost of the reference-free property the whole approach was chosen for.
+
+Both are Phase 4 questions. What Phase 3 settles is that the transverse field
+is not reachable by any weighting of the terms currently in either loss.
+
 ## Caveats
 
 **One perturbation family per component.** The transverse perturbation is a
@@ -132,3 +201,18 @@ config.
 **Coarse reference mesh** (`default_h × 2.5`), as elsewhere in this project.
 The ratio's flatness across geometries and δ makes a discretisation artifact
 unlikely, but it has not been checked against a refined mesh.
+
+**The redundancy test is weak.** `test_energy_traction_terms_vanish_on_the_
+exact_solution` evaluates the traction from element stresses *adjacent* to the
+free surface, and constant-strain triangles give a piecewise-constant stress
+whose boundary element carries a non-zero mean traction. The measured value is
+therefore an upper bound on the true boundary residual and is looser than the
+residual a trained model reaches. The test rules out a grossly non-redundant
+term; it does not establish redundancy to the precision the argument would
+like. Since the sweep found no weight worth using, this did not end up
+mattering — but it would have, had a weight looked promising.
+
+**One lever, one loss.** The sweep varies the gauge-top term only. The fillet
+arc term (`w_trac_arc`) is implemented and was not swept, on the grounds that
+Phase 1 identified the gauge top as the transverse carrier — which is an
+inherited assumption, not something re-checked here.
