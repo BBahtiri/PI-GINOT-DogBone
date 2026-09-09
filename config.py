@@ -179,6 +179,10 @@ TRAINING_CONFIG = {
 
     # Section-resultant anchoring (see physics/uniaxial.py).
     #   'series'       — 1D varying-section finite-strain solve  [default]
+    #   'series_calibrated' — the same, x0.97517 fitted against the FEM
+    #                    reference on the training bank; mean error against
+    #                    FEM 2.55% -> 0.74%, max 5.15% -> 2.54%. Makes the
+    #                    anchor weakly reference-dependent, so it is opt-in.
     #   'uniform'      — finite-strain uniform bar at average stretch
     #   'small_strain' — legacy E*(u/L)*2H, biased low by 5-30%  [ablation]
     #   'none'         — rely on reaction self-consistency alone

@@ -981,8 +981,12 @@ class PI_GINOT_Trainer:
         """Closed-form target for the axial resultant, cached per geometry.
 
         Modes:
-            'series'       — 1D varying-section finite-strain solve (default;
-                             the only one that accounts for the stiff grip).
+            'series'            — 1D varying-section finite-strain solve
+                                  (default; the only closed form that accounts
+                                  for the stiff grip).
+            'series_calibrated' — the same, times the constant fitted against
+                                  the FEM reference on the training bank;
+                                  mean error 2.55% -> 0.74%.
             'uniform'      — finite-strain uniform bar at the average stretch.
             'small_strain' — legacy E*(u/L)*2H; kept for the ablation.
         """
@@ -998,6 +1002,9 @@ class PI_GINOT_Trainer:
         lam = MATERIAL_CONFIG["lam"]
         if mode == "series":
             val = section_resultant_series(fi, u_delta, mu, lam)
+        elif mode == "series_calibrated":
+            val = section_resultant_series(fi, u_delta, mu, lam,
+                                           calibrate=True)
         elif mode == "uniform":
             val = section_resultant_uniform(fi, u_delta, mu, lam)
         elif mode == "small_strain":
