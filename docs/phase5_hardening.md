@@ -141,16 +141,88 @@ is still at the level Phase 2 reached by devoting an entire network to **one**
 specimen (2.7e-02). **Quote the fixed-bank row.** The legacy figures are not
 reproducible from the current code.
 
-### An asymmetry worth noting
+### Budget: the gap widens, but not for the reason first given
 
-The two arms respond to budget completely differently. Quadrupling the epochs
-takes the parameter-conditioned arm from 7.43e-02 to 2.85e-02 on `v` — **2.6×**.
-The point-cloud arm is budget-saturated: Phase 2 measured it at 3.58e-01 after
-400 epochs and 3.54e-01 after 1750, a 1% change for 4.4× the compute.
+An earlier draft of this section claimed the point-cloud arm was
+**budget-saturated**, citing Phase 2's bank-16 measurement (3.58e-01 at 400
+epochs, 3.54e-01 at 1750 — 1% for 4.4× the compute) and concluding the
+trained-out gap was near 8×. That was a number borrowed from a different bank
+size, a different bank draw and a different evaluation set. Measured properly —
+the point-cloud arm re-run at 1600 epochs on the fixed bank, same eight
+geometries — **it is not saturated at all**:
 
-So the gap *widens* with training. At 400 epochs the ratio is 3.3×; comparing
-each arm at its own longer budget it is closer to 8×. The fair equal-budget
-number is 3.3×, and it understates what the configurations do when trained out.
+| 400 → 1600 epochs | `u` | `v` | vm | \|N err\| |
+|---|---|---|---|---|
+| point-cloud | 1.57× | **1.58×** | 1.67× | 2.74× |
+| four parameters | 1.86× | **2.53×** | 1.93× | 0.99× |
+
+Both improve; the parameter-conditioned arm improves faster. So the conclusion
+survives and the mechanism does not:
+
+| ratio, point-cloud / four params | `u` | `v` | vm | vm fillet |
+|---|---|---|---|---|
+| at 400 epochs | 3.38 | **3.32** | 2.30 | 2.22 |
+| at 1600 epochs | 4.00 | **5.30** | 2.65 | 2.74 |
+
+The gap does widen with budget — 3.3× → 5.3× on the transverse field — but
+because one arm improves faster, not because the other has stopped. And 5.3×,
+not 8×.
+
+Both arms at 1600 epochs, for the record:
+
+| | `u` | `v` | vm | vm fillet | \|N err\| |
+|---|---|---|---|---|---|
+| point-cloud | 9.12e-03 | 1.51e-01 | 3.65e-02 | 5.91e-02 | 0.84% |
+| **four parameters** | **2.28e-03** | **2.85e-02** | **1.38e-02** | **2.16e-02** | **0.56%** |
+
+## The last unrun lever, closed cheaply
+
+`boundary_measure_consistent` — allocating boundary points by arc length rather
+than equally per segment — was the one Phase 0/1 lever never measured on the
+operator. Measuring it the obvious way turns out to be both expensive and
+beside the point: under the energy form the traction conditions are **natural
+BCs**, so the boundary collocation this lever reallocates is not read by the
+loss at all. A training arm would take three hours to measure a knob the
+objective does not consult.
+
+What it *does* still change is the point cloud fed to the **encoder** — which
+Phase 4 identified as the bottleneck. That question needs no training. With the
+encoder init pinned so the two configurations differ only in the sampler:
+
+| | Wg/Wgrip | R/L | R/Wgrip | L/Wgrip |
+|---|---|---|---|---|
+| default (equal per segment) | 0.862 | 0.203 | 0.095 | 0.177 |
+| measure-consistent (by arc length) | 0.821 | 0.268 | −0.030 | 0.383 |
+
+**No improvement in fillet representation.** The two fillet ratios move in
+opposite directions — `R/L` up, `R/Wgrip` down — which is what noise looks
+like at this sample size. Nothing here suggests the sampler is what stands
+between the encoder and the fillet, which is consistent with Phase 4, where
+quadrupling the sampling density also changed no field metric.
+
+Pinning the init mattered: without it each invocation builds a differently
+initialised encoder, and the init spread on `R/L` alone covers −0.03 to 0.16 —
+wider than any effect being looked for. The first run of this comparison was
+made that way and had to be discarded.
+
+## The recurring failure mode
+
+Three claims in this project have now failed the same way: a number measured
+under one configuration, quoted as if it held under another.
+
+- Phase 3 dismissed a scale-invariant optimiser on a null result measured while
+  the encoder bottleneck hid the effect.
+- Phase 3 and `ansatz_study.py` built the local-height hypothesis on a −0.843
+  correlation that was von Mises, not transverse.
+- This section claimed budget saturation from a bank-16 legacy-draw
+  measurement that does not transfer to bank 64 on the fixed draw.
+
+None of the three changed a final conclusion, which is luck rather than
+method. The common shape is worth stating: **a measurement is evidence for the
+configuration it was made in, and quoting it outside that configuration is a
+hypothesis, not a citation.**
+
+## Caveats
 
 ## Caveats
 
@@ -158,9 +230,9 @@ number is 3.3×, and it understates what the configurations do when trained out.
 from three samples. The `v` ratio's 0.01 spread should be read as "the seeds
 tried agreed closely", not as a confidence interval.
 
-**The point-cloud arm was not re-run at 1600 epochs on the fixed bank.** Its
-budget-saturation is inferred from Phase 2's bank-16 measurement (400 vs 1750
-epochs, 1% change), not measured here.
+**Both long arms are single-seed.** The 400-epoch comparison has three seeds;
+the 1600-epoch one has one, so the 5.30× trained-out ratio carries no
+uncertainty estimate while the 3.32× equal-budget one does.
 
 **Eight held-out geometries** rather than five, but still eight. The
 per-geometry table matters more than the mean at this sample size, which is why

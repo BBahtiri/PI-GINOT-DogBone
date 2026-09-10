@@ -217,6 +217,11 @@ def main():
     wanted = [v.strip() for v in args.variants.split(",")]
     variants = {}
     if "random" in wanted:
+        # Pin the init.  Without this each invocation builds a differently
+        # initialised encoder, and comparing two sampling configurations across
+        # invocations compares two random networks as much as two samplers --
+        # the init spread on R/L alone covers -0.03 to 0.16.
+        torch.manual_seed(args.seed)
         variants["random"] = PI_GINOT(enc, DECODER_CONFIG).to(
             args.device).eval()
     try:
