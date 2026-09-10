@@ -15,11 +15,20 @@ what a loss-weighting problem or a data problem looks like.
 
 ## What it is not: the hard-BC ansatz
 
+> **Correction (Phase 5).** The −0.843 quoted below is Phase 1's correlation of
+> the **von Mises** error with taper, not the transverse error — this document
+> mis-attributed it, and the mis-attribution is what made the ansatz
+> hypothesis look well-motivated. Measured directly across taper 0.31–0.82 on
+> the fixed bank, the transverse error correlates with taper at **+0.108** —
+> essentially not at all — while von Mises reproduces at −0.758. The ansatz
+> hypothesis was refuted on its own terms anyway (below), but it was never as
+> well-motivated as this section claims.
+
 The decoder enforces the symmetry condition with `v = (y/H_grip)·φ_v`, and its
 docstring claims this "uses the full [0,1] range". That is true only at the
 grip: in the gauge `y` reaches `H_gauge`, so the prefactor is at most the taper
-ratio — as low as 0.28 here. Since Phase 1 measured the transverse error
-correlating with taper at **−0.843**, this looked like the answer, with an
+ratio — as low as 0.28 here. Phase 1's taper correlation of **−0.843** made this
+look like the answer, with an
 obvious fix: use the *local* half-height, `v = (y/h(x))·φ_v`, so the prefactor
 is O(1) everywhere.
 

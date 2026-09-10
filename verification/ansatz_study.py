@@ -17,8 +17,15 @@ The suspect
 
 and its docstring says this "uses the full [0, 1] range".  That is true only
 at the grip.  In the gauge y reaches H_gauge, so the prefactor is at most
-H_gauge/H_grip -- the taper ratio, as low as 0.28 in this bank.  Phase 1
-measured the transverse error correlating with taper at **-0.843**.
+H_gauge/H_grip -- the taper ratio, as low as 0.28 in this bank.
+
+NOTE (Phase 5): this module was motivated by Phase 1's taper correlation of
+-0.843, which was quoted here as a *transverse* correlation.  It is not -- it
+is the correlation of the **von Mises** error with taper.  Measured directly
+across taper 0.31-0.82, the transverse error correlates with taper at +0.108,
+essentially not at all.  The conclusion below is unaffected, since it refutes
+the local-height ansatz on direct measurement rather than on the correlation,
+but the motivation was weaker than stated.
 
 What the physics says phi_v has to be
 -------------------------------------

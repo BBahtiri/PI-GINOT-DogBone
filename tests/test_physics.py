@@ -801,3 +801,48 @@ def test_energy_traction_terms_vanish_on_the_exact_solution():
         f"traction residual on the free boundary is {rms:.3e} in loss units; "
         "the term is not redundant on the solution, so it would bias the "
         "converged answer rather than only reweighting the approach")
+
+
+def test_bank_parameters_depend_only_on_seed_and_index():
+    """A geometry's parameters must not depend on the collocation settings.
+
+    The bank originally drew parameters, meshes and collocation points from
+    one shared RNG, so the parameter sequence moved when `n_interior` or
+    `n_boundary_per_segment` changed, or when `mesh_only` skipped the mesh
+    entirely.  "Validation geometry 11" then named different shapes in
+    different runs -- which is how the Phase 2-4 studies came to evaluate on a
+    narrow taper band while believing they had picked a spread, and it makes
+    every geometry index in the write-ups incomparable across documents.
+    """
+    import config as cfg
+    from config import TRAINING_CONFIG
+    from geometry.banks import VAL_BANK_SEED, build_geometry_bank
+
+    ranges = TRAINING_CONFIG["bank_geo_ranges"]
+    keys = ("L_total", "W_grip", "W_gauge", "R_fillet")
+
+    def draw(mesh_only, n_interior, n_seg):
+        old_i = cfg.COLLOCATION_CONFIG.get("n_interior")
+        old_s = cfg.COLLOCATION_CONFIG.get("n_boundary_per_segment")
+        cfg.COLLOCATION_CONFIG["n_interior"] = n_interior
+        cfg.COLLOCATION_CONFIG["n_boundary_per_segment"] = n_seg
+        try:
+            bank = build_geometry_bank(4, ranges, holes_on=False,
+                                       seed=VAL_BANK_SEED,
+                                       mesh_only=mesh_only)
+        finally:
+            cfg.COLLOCATION_CONFIG["n_interior"] = old_i
+            cfg.COLLOCATION_CONFIG["n_boundary_per_segment"] = old_s
+        return [[float((p if mesh_only else p[0].params)[k]) for k in keys]
+                for p in bank]
+
+    base = draw(True, 1500, 400)
+    for label, got in (
+            ("a different interior count", draw(True, 400, 400)),
+            ("a different boundary count", draw(True, 1500, 120)),
+            ("meshes actually built", draw(False, 1500, 400)),
+            ("meshes built at another resolution", draw(False, 400, 120)),
+    ):
+        assert got == base, (
+            f"bank parameters changed under {label}; a geometry's shape must "
+            "depend only on (seed, index)")
