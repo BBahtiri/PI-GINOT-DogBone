@@ -129,6 +129,72 @@ draft.
   has outgrown is not a gap.** The same class of error, in the opposite
   direction, four sections apart.
 
+## Making the fillet available does not help
+
+If the encoder does not carry the fillet, the obvious remedy is to let it see
+more of the boundary. Sweeping the sampling pipeline on an *untrained* encoder
+— a fair screen here, since trained and random score the same on the fillet —
+shows the pipeline is not the hard limit:
+
+| `n_point` | `radius` | Wg/Wgrip | R/L | R/Wgrip |
+|---|---|---|---|---|
+| 32 (default) | 0.15 | 0.896 | 0.156 | 0.039 |
+| **128** | 0.15 | 0.939 | **0.451** | 0.189 |
+| 128 | 0.05 | 0.906 | 0.389 | **0.260** |
+
+Quadrupling the farthest-point centroids nearly **triples** fillet decodability
+in an untrained encoder, past what the *trained* encoder manages at 32 (0.300).
+The information is reachable; the default sampling just does not reach it.
+
+So train with it. Energy form, bank 64, 400 epochs, `n_point` 32 → 128,
+everything else identical:
+
+| | `u` | `v` | vm | vm fillet | \|N err\| |
+|---|---|---|---|---|---|
+| `n_point` = 32 | 1.287e-02 | 2.880e-01 | 5.916e-02 | 8.221e-02 | 2.40% |
+| `n_point` = 128 | 1.297e-02 | 2.887e-01 | 5.826e-02 | 7.995e-02 | 2.38% |
+
+**Identical — every quantity within 1%**, for 1.7× the cost per epoch. A
+threefold gain in how available the fillet is buys exactly nothing.
+
+## The synthesis: it fails to use it, and Phase 3 says why
+
+That negative is what separates the two readings this document could not
+separate earlier. The fillet is *not* simply destroyed by the sampling —
+`n_point` = 128 makes it substantially more decodable — and the model still
+does not use it. So the answer to *"discards or fails to learn to extract?"* is
+**fails to learn to extract**, and Phase 3 supplies the reason:
+
+- the objective is **183× less sensitive** to the transverse field than to the
+  axial one, so there is almost no gradient pressure to learn *any* transverse
+  refinement;
+- learning to read the fillet out of a point cloud is a hard, indirect
+  sub-problem whose only reward arrives through that 183×-attenuated channel;
+- so the encoder learns the taper ratio, which the axial field rewards richly
+  (R² 0.97), and stops.
+
+This also explains why oracle conditioning works so well without contradicting
+any of it. Handing the decoder the four parameters does not add information the
+point cloud lacked — it removes the need to *learn the extraction*. The weak
+transverse gradient then only has to fit geometry → field, not point cloud →
+geometry → field. The bottleneck was never the information; it was that
+learning to extract it had to be paid for out of the thinnest gradient in the
+problem.
+
+### The concrete proposal this implies
+
+Supervise the extraction directly, with an auxiliary head predicting the
+geometry parameters from the latent. It needs **no reference solution** — the
+parameters are known whenever a training geometry is generated — and it gives
+the encoder a strong, direct gradient for exactly the quantity the physics loss
+cannot reward.
+
+Worth noting: `PI_GINOT.LEGACY_PREFIXES` is `("geom_aux_head.",)`, kept "so
+checkpoints trained before the head was removed still load". **The architecture
+had precisely this head, and it was deleted.** On this evidence that removal
+looks like the wrong call, and restoring it is the cheapest remaining
+experiment in the project.
+
 ## Where Phase 4 stands
 
 1. **Condition on the geometry parameters** where the specimen family is

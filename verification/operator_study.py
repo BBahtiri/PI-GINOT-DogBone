@@ -123,6 +123,14 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
         cfg.COLLOCATION_CONFIG.update(colloc_overrides)
     from training.trainer import PI_GINOT_Trainer
 
+    # Encoder overrides travel inside the training overrides under a
+    # reserved key, so an ablation arm can change the encoder without a
+    # second plumbing path through every caller.
+    enc = dict(ENCODER_CONFIG)
+    if overrides and "_encoder" in overrides:
+        overrides = dict(overrides)
+        enc.update(overrides.pop("_encoder"))
+
     c = dict(TRAINING_CONFIG)
     c.update(batch_size=batch, bank_train_size=bank, bank_val_size=2,
              print_every=chunk_epochs, val_every=10 ** 6, plot_every=0,
@@ -134,10 +142,13 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
 
     if conditioning == "oracle":
         from verification.supervised_ceiling import OracleConditioned
-        model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
+        model = OracleConditioned(enc, DECODER_CONFIG,
                                   TRAINING_CONFIG["bank_geo_ranges"]).to(device)
     else:
-        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
+        model = PI_GINOT(enc, DECODER_CONFIG).to(device)
+    if enc != ENCODER_CONFIG:
+        print("  encoder overrides: " + ", ".join(
+            f"{k}={v}" for k, v in enc.items() if ENCODER_CONFIG.get(k) != v))
     tr = PI_GINOT_Trainer(model=model, loss_fn=_build_loss(form, c),
                           config=c, device=device,
                           save_dir=os.path.join(out, tag or form))

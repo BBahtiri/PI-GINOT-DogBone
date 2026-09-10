@@ -176,6 +176,15 @@ ARMS = {
     "energy-trac-1000": (
         "energy", {"energy_w_trac_top": 1000.0}, {},
         "gauge-top traction an order above — expected to trade energy for it"),
+    # The encoder probe (verification/encoder_probe.py) shows the encoder
+    # carries the taper ratio almost perfectly (R^2 0.97) and essentially
+    # nothing about the fillet (R/L 0.30, R/Wgrip 0.17).  Quadrupling the FPS
+    # centroid count takes fillet decodability in an *untrained* encoder from
+    # 0.156 to 0.451 -- past what the trained encoder manages at 32 -- so this
+    # asks whether that representational gain becomes a field-accuracy gain.
+    "encoder-np128": (
+        "energy", {"_encoder": {"n_point": 128}}, {},
+        "energy form, 128 FPS centroids instead of 32"),
     "oracle-energy": (
         "energy", {}, {},
         "energy form, decoder conditioned on the exact geometry parameters"),

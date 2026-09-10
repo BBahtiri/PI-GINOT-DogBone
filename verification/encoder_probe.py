@@ -76,6 +76,21 @@ from models.pi_ginot import PI_GINOT
 
 KEYS = ("L_total", "W_grip", "W_gauge", "R_fillet")
 
+# The encoder is handed the boundary point cloud normalised to [-1, 1] -- by
+# x_max in x and y_max in y -- so absolute millimetres are removed from its
+# input before it sees anything.  Asking it for R_fillet in mm is asking for
+# something its input cannot contain, and a low score would say nothing about
+# the encoder.  These are the dimensionless quantities that survive the
+# normalisation and that it could in principle carry; the decoder recovers
+# absolute sizes by combining them with the x_max / y_max scalars it gets
+# separately.
+RATIOS = {
+    "Wg/Wgrip": lambda p: p[:, 2] / p[:, 1],
+    "R/L": lambda p: p[:, 3] / p[:, 0],
+    "R/Wgrip": lambda p: p[:, 3] / p[:, 1],
+    "L/Wgrip": lambda p: p[:, 0] / p[:, 1],
+}
+
 
 def build_dataset(n: int, seed: int, device: str, model, cache: str = None):
     """Latent tokens and normalised parameters for n fresh geometries.
@@ -85,11 +100,12 @@ def build_dataset(n: int, seed: int, device: str, model, cache: str = None):
     """
     if cache and os.path.exists(cache):
         d = np.load(cache)
-        return d["Z"], d["Y"]
+        if "P" in d:
+            return d["Z"], d["Y"], d["P"]
     rng = np.random.default_rng(seed)
     ranges = TRAINING_CONFIG["bank_geo_ranges"]
     n_seg = cfg.COLLOCATION_CONFIG.get("n_boundary_per_segment", 400)
-    Z, Y = [], []
+    Z, Y, P = [], [], []
     with torch.no_grad():
         for i in range(n):
             p = sample_geometry_params(rng, geometry_ranges=ranges,
@@ -106,15 +122,17 @@ def build_dataset(n: int, seed: int, device: str, model, cache: str = None):
             Z.append(z[0].cpu().numpy())
             Y.append([(float(p[k]) - ranges[k][0])
                       / (ranges[k][1] - ranges[k][0]) for k in KEYS])
+            P.append([float(p[k]) for k in KEYS])
             if (i + 1) % 40 == 0:
                 print(f"\r    encoded {i + 1}/{n}", end="", flush=True)
     print()
     Z = np.asarray(Z, dtype=np.float64)
     Y = np.asarray(Y, dtype=np.float64)
+    P = np.asarray(P, dtype=np.float64)
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
-        np.savez_compressed(cache, Z=Z, Y=Y)
-    return Z, Y
+        np.savez_compressed(cache, Z=Z, Y=Y, P=P)
+    return Z, Y, P
 
 
 def r2(pred, true):
@@ -167,6 +185,18 @@ def main():
     ap.add_argument("--test-frac", type=float, default=0.25)
     ap.add_argument("--ckpt", default="verification/results/bank64/"
                                       "energy-w0/last.pt")
+    ap.add_argument("--n-point", type=int, default=None,
+                    help="override ENCODER_CONFIG['n_point'] (FPS centroids)")
+    ap.add_argument("--radius", type=float, default=None,
+                    help="override ENCODER_CONFIG['radius'] (ball query)")
+    ap.add_argument("--n-sample", type=int, default=None,
+                    help="override ENCODER_CONFIG['n_sample']")
+    ap.add_argument("--tag", default="",
+                    help="suffix for the encoding cache, so sweep arms do "
+                         "not read each other's cached latents")
+    ap.add_argument("--variants", default="random,trained",
+                    help="which encoders to probe; a trained checkpoint "
+                         "cannot be loaded under overridden encoder settings")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
@@ -174,11 +204,25 @@ def main():
     cfg.COLLOCATION_CONFIG["n_interior"] = 1500
     n_te = int(args.n * args.test_frac)
 
+    enc = dict(ENCODER_CONFIG)
+    for key, val in (("n_point", args.n_point), ("radius", args.radius),
+                     ("n_sample", args.n_sample)):
+        if val is not None:
+            enc[key] = val
+    if enc != ENCODER_CONFIG:
+        print(f"  encoder overrides: "
+              + ", ".join(f"{k}={enc[k]}" for k in
+                          ("n_point", "radius", "n_sample")))
+
+    wanted = [v.strip() for v in args.variants.split(",")]
     variants = {}
-    m_rand = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(args.device).eval()
-    variants["random"] = m_rand
+    if "random" in wanted:
+        variants["random"] = PI_GINOT(enc, DECODER_CONFIG).to(
+            args.device).eval()
     try:
-        m_tr = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(args.device)
+        if "trained" not in wanted:
+            raise RuntimeError("not requested")
+        m_tr = PI_GINOT(enc, DECODER_CONFIG).to(args.device)
         sd = torch.load(args.ckpt, map_location=args.device,
                         weights_only=False)["model_state_dict"]
         sd, _ = PI_GINOT.strip_legacy_keys(sd)
@@ -193,21 +237,26 @@ def main():
 
     for name, model in variants.items():
         print(f"  --- {name} encoder ---")
-        Ztok, Y = build_dataset(
+        Ztok, Y, Praw = build_dataset(
             args.n, args.seed, args.device, model,
-            cache=f"verification/results/probe_cache/{name}_{args.n}_"
-                  f"{args.seed}.npz")
+            cache=f"verification/results/probe_cache/{name}{args.tag}_"
+                  f"{args.n}_{args.seed}.npz")
         reps = {"pooled": Ztok.mean(axis=1),
                 "tokens": Ztok.reshape(len(Ztok), -1)}
-        print(f"    {'probe':>8}" + "".join(f"{k:>12}" for k in KEYS)
-              + f"{'mean':>9}{'lambda':>10}")
-        for rname, X in reps.items():
-            Xtr, Xte, Ytr, Yte = X[n_te:], X[:n_te], Y[n_te:], Y[:n_te]
-            pred, lam = ridge_probe(Xtr, Ytr, Xte)
-            sc = r2(pred, Yte)
-            print(f"    {rname:>8}" + "".join(f"{v:>12.3f}" for v in sc)
-                  + f"{sc.mean():>9.3f}{lam:>10.1e}")
-        print()
+        Yr = np.stack([f(Praw) for f in RATIOS.values()], axis=1)
+        for label, target, cols in (("absolute (mm)", Y, KEYS),
+                                    ("dimensionless", Yr, tuple(RATIOS))):
+            print(f"    {label}")
+            print(f"    {'probe':>8}" + "".join(f"{k:>12}" for k in cols)
+                  + f"{'mean':>9}{'lambda':>10}")
+            for rname, X in reps.items():
+                Xtr, Xte = X[n_te:], X[:n_te]
+                Ytr, Yte = target[n_te:], target[:n_te]
+                pred, lam = ridge_probe(Xtr, Ytr, Xte)
+                sc = r2(pred, Yte)
+                print(f"    {rname:>8}" + "".join(f"{v:>12.3f}" for v in sc)
+                      + f"{sc.mean():>9.3f}{lam:>10.1e}")
+            print()
     print("  R^2 = 1 is exact recovery, 0 is no better than predicting the")
     print("  mean.  High scores mean the geometry survives the encoder and the")
     print("  failure is in using it; low scores mean it is destroyed.")
