@@ -91,10 +91,16 @@ class OracleConditioned(PI_GINOT):
     optimiser; ``trainable_parameters`` is what should be optimised.
     """
 
-    PARAM_KEYS = ("L_total", "W_grip", "W_gauge", "R_fillet")
+    ALL_KEYS = ("L_total", "W_grip", "W_gauge", "R_fillet")
 
-    def __init__(self, encoder_config, decoder_config, ranges, hidden=96):
+    def __init__(self, encoder_config, decoder_config, ranges, hidden=96,
+                 keys=None):
         super().__init__(encoder_config, decoder_config)
+        # Withholding a parameter turns this into an ablation of *which*
+        # geometry information matters.  Note that L_total and W_grip already
+        # reach the decoder outside the latent, as x_max and y_max, so the
+        # informative ablations are the other two.
+        self.PARAM_KEYS = tuple(keys) if keys else self.ALL_KEYS
         self._n_lat = encoder_config["n_point"]
         self._dim = decoder_config["embed_dim"]
         self._ranges = ranges
@@ -183,6 +189,9 @@ def main():
     ap.add_argument("--h-factor", type=float, default=2.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--params", default=None,
+                    help="comma-separated subset of L_total,W_grip,W_gauge,"
+                         "R_fillet for oracle conditioning; default all four")
     ap.add_argument("--conditioning", default="pointcloud",
                     choices=["pointcloud", "oracle"],
                     help="'oracle' replaces the point-cloud encoder with an "
@@ -213,9 +222,12 @@ def main():
     print(f"  ({time.time() - t0:.0f}s)")
 
     if args.conditioning == "oracle":
+        keys = ([k.strip() for k in args.params.split(",")]
+                if args.params else None)
         model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
-                                  TRAINING_CONFIG["bank_geo_ranges"]
-                                  ).to(args.device)
+                                  TRAINING_CONFIG["bank_geo_ranges"],
+                                  keys=keys).to(args.device)
+        print(f"  oracle parameters: {model.PARAM_KEYS}")
         train_params = model.trainable_parameters()
     else:
         model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(args.device)

@@ -121,6 +121,55 @@ point-cloud encoder in place could have separated them. The lesson generalises
 past this project: a null result for intervention A measured under bottleneck B
 is not a null result for A.
 
+## Which geometry information goes missing
+
+`verification/encoder_probe.py` fits a ridge probe from the encoder's latent to
+the four normalised parameters on 600 fresh geometries, 150 held out. The
+parameters are recoverable *in principle* — the point cloud is generated from
+them — so the probe measures whether they are recoverable *in practice*.
+
+R², where 1 is exact recovery and 0 is no better than predicting the mean:
+
+| encoder | representation | `L_total` | `W_grip` | `W_gauge` | `R_fillet` |
+|---|---|---|---|---|---|
+| random | pooled | −0.017 | 0.164 | 0.543 | 0.126 |
+| random | tokens | −0.031 | 0.120 | 0.302 | 0.054 |
+| **trained** | **pooled** | −0.002 | 0.225 | **0.717** | **0.198** |
+| **trained** | **tokens** | 0.001 | 0.222 | **0.690** | **0.028** |
+
+Both representations are probed because the decoder reads both — the pooled
+vector through FiLM, the 32 tokens through cross-attention — and information
+could live in the token structure while being averaged out of the pool.
+
+**The reading turns on a detail of the interface.** `L_total` and `W_grip` reach
+the decoder *outside* the latent, as the `x_max` and `y_max` scalars used for
+coordinate normalisation and the hard BCs. The encoder does not need to carry
+them, and the probe confirms it does not. That leaves exactly two parameters
+that can only arrive through the latent:
+
+- `W_gauge`, which the trained encoder carries well (R² 0.72 pooled, 0.69 from
+  tokens);
+- **`R_fillet`, which it barely carries at all** — 0.20 pooled and **0.03** from
+  the tokens, against 0.13 and 0.05 for an *untrained* encoder.
+
+So the single piece of geometry that reaches the decoder through no channel at
+all is the fillet radius. That is precisely the local detail Phase 3 named as
+the suspect, arrived at independently: Phase 3 inferred it from the correlation
+between transverse error and taper, this measures it in the representation.
+
+Training does not rescue it. The trained encoder is better than a random one on
+`W_gauge` (0.72 vs 0.54) and no better on `R_fillet` — so on the answer to
+*"does it discard the information or fail to learn to use it?"*, the fillet
+radius is discarded, or at least never extracted, and more training of the same
+architecture will not change that.
+
+**What the probe does not show.** R² from a ridge probe measures *linear*
+decodability. `R_fillet` could be present in a nonlinear code that this cannot
+read — though a representation the decoder's FiLM and attention must consume is
+one where linear availability is the relevant question, and an unregularised
+MLP probe on these sample sizes was worse than useless (see the module
+docstring). This is evidence of linear absence, not proof of absence.
+
 ## Where Phase 4 stands
 
 1. **Condition on the geometry parameters** where the specimen family is
