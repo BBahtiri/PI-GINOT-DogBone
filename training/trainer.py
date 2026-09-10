@@ -161,6 +161,7 @@ class PI_GINOT_Trainer:
             # and printed in the epoch summary but never kept, so the one
             # quantity being minimised was the one quantity not recorded.
             "L_energy": [],
+            "L_geom_aux": [],
             "w_eq": [], "w_trac_top": [], "w_trac_arc": [],
             "val_raw_loss": [],
             "ckpt_swap_du": [], "ckpt_section_cv": [],
@@ -410,6 +411,8 @@ class PI_GINOT_Trainer:
             self.history["L_part"].append(batch_loss["L_part"])
             self.history["L_barrier"].append(batch_loss["L_barrier"])
             self.history["L_energy"].append(batch_loss.get("L_energy", 0.0))
+            self.history["L_geom_aux"].append(
+                batch_loss.get("L_geom_aux", 0.0))
             # _train_one_epoch returns the batch-mean under "L_resultant";
             # "L_resultant_log" is the per-geometry key and never appears here,
             # so this channel logged a constant 0.0 for every run to date.
@@ -724,7 +727,7 @@ class PI_GINOT_Trainer:
         # there to stop it recurring.
         accum = {"L_eq": 0.0, "L_trac_top": 0.0, "L_trac_arc": 0.0,
                  "L_trac_hole": 0.0, "L_part": 0.0, "L_barrier": 0.0,
-                 "L_resultant": 0.0, "L_energy": 0.0}
+                 "L_resultant": 0.0, "L_energy": 0.0, "L_geom_aux": 0.0}
         # Determinant floors are minima over the batch, not means.
         mins = {"min_J2D": float("inf"), "min_J3D": float("inf")}
 
@@ -875,6 +878,24 @@ class PI_GINOT_Trainer:
                 pt_pts, pt_norms, pt_dirs, bpc, u_delta, x_max, y_max,
                 sample_ids=sample_ids,
             )
+
+        # Geometry auxiliary loss.  Supervises the ENCODER to extract the
+        # dimensionless shape descriptors, using targets that are known for
+        # free whenever a training geometry is generated -- no reference
+        # solution is involved, so this does not compromise the
+        # physics-only character of the training.
+        w_geom = float(self.config.get("w_geom_aux", 0.0))
+        if w_geom > 0.0 and getattr(self.model, "geom_aux_head", None):
+            from geometry.descriptors import standardised_ratios
+            tgt = torch.tensor(standardised_ratios(mesh.params),
+                               dtype=torch.float32,
+                               device=self.device).unsqueeze(0)
+            pred = self.model.predict_geometry(loss_dict["geometry_latent"])
+            L_geom = (pred - tgt).pow(2).mean()
+            loss_dict["loss"] = loss_dict["loss"] + w_geom * L_geom
+            loss_dict["L_geom_aux_log"] = L_geom.item()
+        else:
+            loss_dict["L_geom_aux_log"] = 0.0
 
         # Section-resultant loss (axial force consistency)
         # The anchor holds the force balance that the penalty form does not

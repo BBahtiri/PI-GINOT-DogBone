@@ -45,7 +45,8 @@ class PI_GINOT(nn.Module):
         clean = {k: v for k, v in state_dict.items() if k not in dropped}
         return clean, dropped
 
-    def __init__(self, encoder_config: dict, decoder_config: dict):
+    def __init__(self, encoder_config: dict, decoder_config: dict,
+                 aux_head: bool = False):
         super().__init__()
 
         assert encoder_config["out_c"] == decoder_config["embed_dim"], (
@@ -55,6 +56,34 @@ class PI_GINOT(nn.Module):
 
         self.encoder = GeometryEncoder(encoder_config)
         self.decoder = PhysicsDecoder(decoder_config)
+
+        # Geometry auxiliary head, built only when asked so that checkpoints
+        # without it load unchanged.  It predicts the four dimensionless shape
+        # descriptors (geometry/descriptors.py) from the pooled latent -- the
+        # pooled vector because that is what FiLM conditioning consumes and
+        # what the probe finds most decodable, and dimensionless because the
+        # encoder's input is scale-normalised and cannot determine millimetres.
+        #
+        # The point is not to add information.  It is to give the encoder a
+        # direct gradient for extracting geometry, which the physics loss
+        # cannot supply: the objective is 183x less sensitive to the transverse
+        # field than the axial one, so the reward for learning to read a fillet
+        # out of a point cloud arrives through the thinnest channel in the
+        # problem.  See docs/phase4_geometry_encoder.md.
+        self.geom_aux_head = None
+        if aux_head:
+            d = encoder_config["out_c"]
+            self.geom_aux_head = nn.Sequential(
+                nn.Linear(d, 128), nn.GELU(),
+                nn.Linear(128, 128), nn.GELU(),
+                nn.Linear(128, 4),
+            )
+
+    def predict_geometry(self, geometry_latent: torch.Tensor):
+        """Standardised dimensionless shape descriptors from the latent."""
+        if self.geom_aux_head is None:
+            raise RuntimeError("model was built without aux_head=True")
+        return self.geom_aux_head(geometry_latent.mean(dim=1))
 
     # Encode-once pattern
     def encode(

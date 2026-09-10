@@ -145,7 +145,8 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
         model = OracleConditioned(enc, DECODER_CONFIG,
                                   TRAINING_CONFIG["bank_geo_ranges"]).to(device)
     else:
-        model = PI_GINOT(enc, DECODER_CONFIG).to(device)
+        model = PI_GINOT(enc, DECODER_CONFIG,
+                         aux_head=c.get("w_geom_aux", 0.0) > 0.0).to(device)
     if enc != ENCODER_CONFIG:
         print("  encoder overrides: " + ", ".join(
             f"{k}={v}" for k, v in enc.items() if ENCODER_CONFIG.get(k) != v))

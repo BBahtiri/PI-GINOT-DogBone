@@ -185,6 +185,35 @@ ARMS = {
     "encoder-np128": (
         "energy", {"_encoder": {"n_point": 128}}, {},
         "energy form, 128 FPS centroids instead of 32"),
+    # The geometry auxiliary head, restored with dimensionless targets.  If
+    # the reading in 4.4 is right -- the encoder can see the fillet and never
+    # learns to, because the transverse reward is 183x attenuated -- then
+    # paying for the extraction directly should move v without any reference
+    # solution.  If v does not move, that reading is wrong.
+    # The aux term starts near 1.0 (z-scored targets, untrained head) against
+    # a reducible energy of ~1e-4, so the weights below span subordinate to
+    # dominant.  Dominant is not obviously wrong here: the aux gradient reaches
+    # only the encoder and the aux head, and the encoder's physics gradient is
+    # exactly what is failing, so letting the aux own the encoder is closer to
+    # what oracle conditioning does than it is to drowning the loss.
+    "geomaux-1e-3": (
+        "energy", {"w_geom_aux": 1e-3}, {},
+        "aux ~10x the reducible energy"),
+    "geomaux-1e-1": (
+        "energy", {"w_geom_aux": 1e-1}, {},
+        "aux ~1000x the reducible energy"),
+    "geomaux-10": (
+        "energy", {"w_geom_aux": 10.0}, {},
+        "aux owns the encoder outright"),
+    # The missing cell.  n_point=128 makes the fillet ratio linearly available
+    # (0.156 -> 0.451 in an untrained encoder) but on its own changes no field
+    # metric; the auxiliary loss supplies a gradient for extraction but at
+    # n_point=32 fails to raise R/L at any weight, even 10 where it dominates
+    # the objective outright.  Neither alone works.  This asks whether they are
+    # complementary -- availability plus a reason to use it.
+    "geomaux-np128": (
+        "energy", {"w_geom_aux": 1e-3, "_encoder": {"n_point": 128}}, {},
+        "128 FPS centroids AND the geometry auxiliary loss"),
     "oracle-energy": (
         "energy", {}, {},
         "energy form, decoder conditioned on the exact geometry parameters"),

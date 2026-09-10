@@ -222,6 +222,21 @@ TRAINING_CONFIG = {
     # absolute anchor while it contributed ~0.01% of the signal.
     "w_resultant_abs_energy": 0.0,
 
+    # Geometry auxiliary loss: supervise the ENCODER to predict the four
+    # dimensionless shape descriptors (geometry/descriptors.py) from its
+    # latent.  Targets are known for free when a training geometry is
+    # generated, so this costs no reference solution.
+    #
+    # The motivation is measured, not assumed.  The encoder carries the taper
+    # ratio at probe R^2 0.974 and the fillet at 0.03-0.30, and making the
+    # fillet more available (4x the FPS centroids, decodability 0.156 -> 0.451)
+    # changes no field metric by more than 1%.  So it is not that the encoder
+    # cannot see the fillet -- it never learns to, because the only reward for
+    # doing so arrives through a transverse channel the objective attenuates
+    # 183x.  This term pays for the extraction directly.
+    # See docs/phase4_geometry_encoder.md.  0.0 = off.
+    "w_geom_aux": 0.0,
+
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline
     "w_trac_top": 2.0,              # Reduced: equilibrium + resultant should drive learning

@@ -195,6 +195,85 @@ had precisely this head, and it was deleted.** On this evidence that removal
 looks like the wrong call, and restoring it is the cheapest remaining
 experiment in the project.
 
+## Supervising the extraction: the head, restored properly
+
+The proposal above was the cheapest remaining experiment, so it was run.
+`geometry/descriptors.py` defines the four dimensionless descriptors as one
+shared definition — the probe and the training target cannot drift apart — and
+`PI_GINOT(aux_head=True)` predicts them from the pooled latent, weighted by
+`w_geom_aux` (0.0 by default). The targets cost nothing: they are known
+whenever a training geometry is generated, so this stays reference-free.
+
+**A correction to what this document said about the original head.** It did
+exist, but `w_geom_aux` had no entry in the config, so the trainer's
+`config.get("w_geom_aux", 0.0)` was always zero — the head was never trained,
+which is why Phase 0 removed it as dead code. And its four shape targets were
+the *absolute* parameters normalised to their sampling ranges: had it ever been
+switched on, it would have been training the encoder toward `L_total` in
+millimetres, which its scale-normalised input cannot determine. The same
+mistake this document's first probe made. "The architecture had this and it was
+deleted" was too kind to it.
+
+Energy form, bank 64, 400 epochs:
+
+| arm | `u` | `v` | vm | \|N err\| |
+|---|---|---|---|---|
+| baseline (`n_point` 32, no aux) | 1.287e-02 | 2.880e-01 | **5.916e-02** | 2.40% |
+| `n_point` = 128 alone | 1.297e-02 | 2.887e-01 | 5.826e-02 | 2.38% |
+| **aux, w = 1e-3** | **1.142e-02** | **2.389e-01** | 6.097e-02 | **0.87%** |
+| aux, w = 1e-1 | 1.357e-02 | 2.537e-01 | 6.987e-02 | 1.97% |
+| aux, w = 10 | 1.361e-02 | 3.336e-01 | 8.157e-02 | 1.91% |
+| `n_point` = 128 **and** aux | 1.196e-02 | 2.477e-01 | 5.958e-02 | 1.56% |
+| *oracle conditioning* | *2.71e-03* | ***1.06e-01*** | *2.63e-02* | *1.40%* |
+
+The auxiliary loss helps, and modestly: **1.21× on `v`** at the lightest weight,
+against 2.7× for replacing the encoder. Stronger weights make it worse. The two
+interventions are **not complementary** — availability plus gradient (2.48e-01)
+is no better than gradient alone (2.39e-01).
+
+One real and nearly free win: at `w = 1e-3` the section-force error drops from
+2.40% to **0.87%**, a 2.7× improvement. The aux head earns its keep on the
+force balance even though it does little for the transverse field.
+
+### Why it fails, and what that rules out
+
+Probing the aux-trained encoders explains the ceiling. Fillet decodability
+(`R/L`, pooled):
+
+| encoder | R/L |
+|---|---|
+| untrained, `n_point` 32 | 0.156 |
+| physics-trained, `n_point` 32 | 0.300 |
+| aux w = 1e-3 | 0.322 |
+| **aux w = 10** | **0.254** |
+| untrained, `n_point` 128 | 0.451 |
+
+**Even at `w = 10`, where the auxiliary term dominates the objective outright,
+the encoder does not learn to extract the fillet ratio** — it ends up *worse*
+than physics training alone. Predicting four numbers from a 64-dimensional
+pooled vector is not a hard regression; if the information were reachable
+through this pipeline, a dominant loss would reach it. It does not.
+
+So the reading in the previous section — *"it fails to use it, not to see
+it"* — was too generous, and the correction is this. There are two claims to
+separate:
+
+- the fillet is *linearly available in a random encoder at `n_point` 128*
+  (0.451) — true, and that is what motivated the previous section;
+- the fillet is *extractable by this architecture under training* — false, at
+  either sampling density, under physics gradients or a dominant direct
+  supervision.
+
+The first does not imply the second. A representation that a ridge probe can
+read off 450 samples is not thereby one that FPS pooling and cross-attention
+can learn to produce and propagate under gradient descent.
+
+**What this rules out is the whole class of in-place repairs.** Sampling
+resolution, direct supervision, and both together each buy ≤1.21× on the
+transverse field, while replacing the conditioning path buys 2.7× at the same
+budget and 13× when trained out. For this specimen family the answer is not to
+fix the point-cloud encoder; it is not to use it.
+
 ## Where Phase 4 stands
 
 1. **Condition on the geometry parameters** where the specimen family is
