@@ -59,6 +59,13 @@ from config import COLLOCATION_CONFIG, TRAINING_CONFIG
 from training.manifest import write_manifest
 from verification.operator_study import evaluate, train_operator
 
+# Arms whose name starts with "oracle-" swap the point-cloud encoder for an
+# MLP over the four exact geometry parameters (see
+# verification/supervised_ceiling.OracleConditioned).  Supervised, that change
+# takes held-out v from 3.04e-01 to 1.07e-02 at bank 64; these arms ask whether
+# it survives physics training, which is the only version that matters since
+# supervision needs a solve per geometry.
+
 # name -> (form, TRAINING_CONFIG overrides, COLLOCATION_CONFIG overrides, why)
 ARMS = {
     "baseline": (
@@ -169,6 +176,9 @@ ARMS = {
     "energy-trac-1000": (
         "energy", {"energy_w_trac_top": 1000.0}, {},
         "gauge-top traction an order above — expected to trade energy for it"),
+    "oracle-energy": (
+        "energy", {}, {},
+        "energy form, decoder conditioned on the exact geometry parameters"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "
@@ -189,7 +199,9 @@ def run_arm(name: str, args, val_indices):
             form, args.minutes, args.bank, args.batch, args.lr, args.device,
             args.seed, args.out, args.n_interior,
             overrides=over, colloc_overrides=coll_over, tag=name,
-            max_epochs=args.epochs)
+            max_epochs=args.epochs,
+            conditioning="oracle" if name.startswith("oracle-")
+            else "pointcloud")
         rows = evaluate(model, val_indices, args.device)
     finally:
         # train_operator mutates the module-level collocation config; without

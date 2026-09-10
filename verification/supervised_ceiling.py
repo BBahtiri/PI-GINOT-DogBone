@@ -56,6 +56,8 @@ from geometry.banks import (TRAIN_BANK_SEED, VAL_BANK_SEED,
                             build_geometry_bank)
 from geometry.collocation import sample_collocation_points
 from geometry.parametric_dogbone import generate_dogbone
+import torch.nn as nn
+
 from models.pi_ginot import PI_GINOT
 from training.manifest import set_deterministic, write_manifest
 from verification.fem.mesh import build_mesh, default_h
@@ -64,6 +66,69 @@ from verification.fem.solver import solve as fem_solve
 MU, LAM = MATERIAL_CONFIG["mu"], MATERIAL_CONFIG["lam"]
 STATE = MATERIAL_CONFIG["state"]
 CACHE = "verification/results/fem_cache"
+
+
+class OracleConditioned(PI_GINOT):
+    """The same decoder, conditioned on the four exact geometry parameters.
+
+    This separates two architectural explanations that the supervised ceiling
+    leaves entangled.  Held-out `v` is ~0.3 however the model is trained, and
+    the encoder was the suspect -- farthest-point sampling and ball-query
+    subsampling are free to discard the fillet detail the transverse field
+    depends on.  But "the encoder loses information" and "the map from
+    geometry to transverse field is what the decoder cannot generalise" both
+    predict exactly what was measured.
+
+    The geometry here is *fully* determined by four numbers, so handing the
+    decoder those numbers removes any possibility of information loss in the
+    conditioning path.  If held-out `v` improves markedly, the encoder is the
+    bottleneck and Phase 4 is an encoder problem.  If it does not, no encoder
+    can help, because the information was never missing.
+
+    The parameter MLP is sized to ~207k weights against the point-cloud
+    encoder's 220k, so the comparison is not confounded by capacity.  The
+    inherited encoder is left constructed but unused and excluded from the
+    optimiser; ``trainable_parameters`` is what should be optimised.
+    """
+
+    PARAM_KEYS = ("L_total", "W_grip", "W_gauge", "R_fillet")
+
+    def __init__(self, encoder_config, decoder_config, ranges, hidden=96):
+        super().__init__(encoder_config, decoder_config)
+        self._n_lat = encoder_config["n_point"]
+        self._dim = decoder_config["embed_dim"]
+        self._ranges = ranges
+        self.param_mlp = nn.Sequential(
+            nn.Linear(len(self.PARAM_KEYS), hidden), nn.GELU(),
+            nn.Linear(hidden, hidden), nn.GELU(),
+            nn.Linear(hidden, self._n_lat * self._dim),
+        )
+        self._geo = None
+
+    def trainable_parameters(self):
+        return list(self.decoder.parameters()) + list(
+            self.param_mlp.parameters())
+
+    def set_geometry(self, params: dict):
+        """Stash the parameters the next encode() call should use.
+
+        Stateful, deliberately: eval/compare_reference drives the model
+        through ``encode(boundary_pc, ...)`` and has no way to pass geometry
+        parameters, and changing that signature to accommodate a diagnostic
+        would be the wrong trade.
+        """
+        self._geo = params
+
+    def encode(self, boundary_pc, x_max, y_max, sample_ids=None):
+        """Latent from the geometry parameters.  ``boundary_pc`` is ignored."""
+        if self._geo is None:
+            raise RuntimeError("call set_geometry(params) before encode()")
+        dev = next(self.param_mlp.parameters()).device
+        x = torch.tensor(
+            [[(float(self._geo[k]) - self._ranges[k][0])
+              / (self._ranges[k][1] - self._ranges[k][0])
+              for k in self.PARAM_KEYS]], dtype=torch.float32, device=dev)
+        return self.param_mlp(x).view(1, self._n_lat, self._dim)
 
 
 def _solve_cached(params, tag: str, h_factor: float):
@@ -118,6 +183,10 @@ def main():
     ap.add_argument("--h-factor", type=float, default=2.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--conditioning", default="pointcloud",
+                    choices=["pointcloud", "oracle"],
+                    help="'oracle' replaces the point-cloud encoder with an "
+                         "MLP over the four exact geometry parameters")
     ap.add_argument("--out", default="verification/results/supervised")
     args = ap.parse_args()
 
@@ -143,8 +212,17 @@ def main():
               flush=True)
     print(f"  ({time.time() - t0:.0f}s)")
 
-    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(args.device)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    if args.conditioning == "oracle":
+        model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
+                                  TRAINING_CONFIG["bank_geo_ranges"]
+                                  ).to(args.device)
+        train_params = model.trainable_parameters()
+    else:
+        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(args.device)
+        train_params = list(model.parameters())
+    print(f"  conditioning: {args.conditioning} "
+          f"({sum(p.numel() for p in train_params):,} trainable)")
+    opt = torch.optim.Adam(train_params, lr=args.lr)
     # Cosine over the fixed budget rather than ReduceLROnPlateau: the loss
     # here is stochastic in both the geometry batch and the node subsample, so
     # a plateau rule fires on noise -- at patience 25 the rate fell from 3e-4
@@ -161,6 +239,7 @@ def main():
     packed = []
     for (gmesh, coll), sol in zip(entries, targets):
         packed.append((
+            gmesh.params,
             tens(coll.boundary_pc),
             tens(sol.mesh.nodes),
             tens(sol.u),
@@ -179,7 +258,9 @@ def main():
                          replace=False)
         total = torch.zeros((), device=args.device)
         for k in idx:
-            bpc, pts, ref, xm, ym = packed[k]
+            gparams, bpc, pts, ref, xm, ym = packed[k]
+            if args.conditioning == "oracle":
+                model.set_geometry(gparams)
             sid = torch.tensor([int(k)], dtype=torch.long)
             if args.n_points and pts.shape[1] > args.n_points:
                 sel = torch.from_numpy(
@@ -196,7 +277,7 @@ def main():
                                  / ref[0, :, c].pow(2).sum().clamp_min(1e-30))
         loss = total / len(idx)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(train_params, 1.0)
         opt.step()
         sched.step()
         if ep % 50 == 0 or ep == 1:
@@ -217,6 +298,8 @@ def main():
         gmesh, coll = val_bank[gi]
         sol = _solve_cached(gmesh.params, f"val_{VAL_BANK_SEED}_{gi}",
                             args.h_factor)
+        if args.conditioning == "oracle":
+            model.set_geometry(gmesh.params)
         r = compare_one(model, gmesh.params, LOADING_CONFIG["u_max"], None,
                         args.device, sample_id=100 + gi, coll=coll, sol=sol)
         fi = get_fillet_geometry(gmesh.params)

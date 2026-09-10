@@ -267,6 +267,14 @@ class EnergyLoss(nn.Module):
         encoder input, exactly as in PhysicsLoss.
         """
         if geometry_latent is None:
+            # A model conditioned on geometry parameters rather than on the
+            # boundary point cloud needs to know which geometry this is, and
+            # encode()'s signature has no way to say.  The loss does know --
+            # `params` selects the quadrature mesh -- so it tells the model
+            # when the model asks to be told.  See
+            # verification/supervised_ceiling.OracleConditioned.
+            if hasattr(model, "set_geometry"):
+                model.set_geometry(params)
             geometry_latent = model.encode(boundary_pc, x_max, y_max,
                                            sample_ids=sample_ids)
 

@@ -101,7 +101,8 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
                    lr: float, device: str, seed: int, out: str,
                    n_interior: int, chunk_epochs: int = 25,
                    overrides: dict = None, colloc_overrides: dict = None,
-                   tag: str = None, max_epochs: int = None):
+                   tag: str = None, max_epochs: int = None,
+                   conditioning: str = "pointcloud"):
     """Train one operator under a wall-clock budget, in short fit() chunks.
 
     ``max_epochs`` stops on an epoch count instead of the clock.  Equal
@@ -131,7 +132,12 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
     if overrides:
         c.update(overrides)
 
-    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
+    if conditioning == "oracle":
+        from verification.supervised_ceiling import OracleConditioned
+        model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
+                                  TRAINING_CONFIG["bank_geo_ranges"]).to(device)
+    else:
+        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
     tr = PI_GINOT_Trainer(model=model, loss_fn=_build_loss(form, c),
                           config=c, device=device,
                           save_dir=os.path.join(out, tag or form))
@@ -181,6 +187,8 @@ def evaluate(model, val_indices, device, ref_h_factor=2.5):
         gmesh, coll = bank[gi]
         p = gmesh.params
         sol = _reference(bank, gi, ref_h_factor)
+        if hasattr(model, "set_geometry"):
+            model.set_geometry(p)
         r = compare_one(model, p, LOADING_CONFIG["u_max"], None, device,
                         sample_id=100 + gi, coll=coll, sol=sol)
         rows.append({
