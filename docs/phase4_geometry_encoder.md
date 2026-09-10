@@ -1,3 +1,11 @@
+> **Note.** Every number on this page was measured on the **legacy bank draw**,
+> which depended on collocation settings and has since been replaced. The
+> conclusions all survive re-measurement on the fixed bank across the full
+> taper range — see `docs/phase5_hardening.md` — but for the headline figures
+> quote that document: the parameter-conditioned arm reaches `v = 2.85e-02` at
+> 1600 epochs there, against the 2.20e-02 quoted below, and the equal-budget
+> ratio is 3.32 ± 0.01 over three seeds.
+
 # The geometry encoder is the bottleneck
 
 Phase 3 ended with a puzzle and a hypothesis. The puzzle: held-out transverse

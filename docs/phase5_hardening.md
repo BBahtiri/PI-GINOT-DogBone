@@ -96,11 +96,71 @@ changes is the confidence attached to them: the headline is now measured across
 the full taper range on a bank whose indices mean something, rather than on a
 band that happened to fall where the problem is mildest.
 
+## Seed variance: the first error bars in the project
+
+Every number in Phases 0–4 came from a single seed. Three seeds on both arms,
+400 epochs, same fixed bank and same eight held-out geometries:
+
+| | seed 0 | seed 1 | seed 2 | mean | sd |
+|---|---|---|---|---|---|
+| point-cloud `v` | 2.395e-01 | 2.234e-01 | 2.772e-01 | 2.467e-01 | 2.3e-02 |
+| **four params `v`** | 7.221e-02 | 6.709e-02 | 8.361e-02 | 7.430e-02 | 6.9e-03 |
+| point-cloud `u` | 1.431e-02 | 1.583e-02 | 1.395e-02 | 1.470e-02 | 8.2e-04 |
+| **four params `u`** | 4.228e-03 | 3.946e-03 | 4.168e-03 | 4.114e-03 | 1.2e-04 |
+
+Absolute errors move about ±9% with the seed. **The ratio does not:**
+
+| | seed 0 | seed 1 | seed 2 | mean ± sd |
+|---|---|---|---|---|
+| `u` | 3.38 | 4.01 | 3.35 | **3.58 ± 0.31** |
+| `v` | 3.32 | 3.33 | 3.32 | **3.32 ± 0.01** |
+| vm | 2.30 | 2.38 | 2.06 | **2.25 ± 0.14** |
+| vm fillet | 2.22 | 2.32 | 2.04 | **2.19 ± 0.12** |
+| \|N err\| | 2.30 → 0.56% | 2.68 → 0.31% | 1.76 → 0.68% | 2.25% → 0.52% |
+
+The transverse ratio is **3.32 ± 0.01** — three significant figures of agreement
+across seeds whose absolute errors differ by 24%. That is not luck: both arms
+see the same geometries in the same order for a given seed, so the seed noise
+is largely common-mode and divides out. It means the *comparison* is far better
+determined than either arm on its own, and it is the comparison the project's
+conclusion rests on.
+
+## The flagship figure, on the bank the code now produces
+
+The 1600-epoch parameter-conditioned run, repeated on the fixed bank and scored
+across taper 0.31–0.82:
+
+| | `u` | `v` | vm | vm fillet | \|N err\| |
+|---|---|---|---|---|---|
+| legacy bank, narrow band | 1.55e-03 | 2.20e-02 | 1.13e-02 | 1.60e-02 | 0.27% |
+| **fixed bank, full range** | **2.28e-03** | **2.85e-02** | **1.38e-02** | **2.16e-02** | **0.56%** |
+
+About 30% worse across the board, which is what including the hard geometries
+should do — and `v = 2.85e-02` on held-out shapes spanning the full taper range
+is still at the level Phase 2 reached by devoting an entire network to **one**
+specimen (2.7e-02). **Quote the fixed-bank row.** The legacy figures are not
+reproducible from the current code.
+
+### An asymmetry worth noting
+
+The two arms respond to budget completely differently. Quadrupling the epochs
+takes the parameter-conditioned arm from 7.43e-02 to 2.85e-02 on `v` — **2.6×**.
+The point-cloud arm is budget-saturated: Phase 2 measured it at 3.58e-01 after
+400 epochs and 3.54e-01 after 1750, a 1% change for 4.4× the compute.
+
+So the gap *widens* with training. At 400 epochs the ratio is 3.3×; comparing
+each arm at its own longer budget it is closer to 8×. The fair equal-budget
+number is 3.3×, and it understates what the configurations do when trained out.
+
 ## Caveats
 
-**Still one seed and 400 epochs**, on 2 CPU cores. The 3.3× on `v` is the
-short-budget figure; at 1600 epochs on the legacy bank the same change was
-worth 13×, and that longer run has not been repeated on the fixed bank.
+**Three seeds, not thirty**, and the standard deviations above are computed
+from three samples. The `v` ratio's 0.01 spread should be read as "the seeds
+tried agreed closely", not as a confidence interval.
+
+**The point-cloud arm was not re-run at 1600 epochs on the fixed bank.** Its
+budget-saturation is inferred from Phase 2's bank-16 measurement (400 vs 1750
+epochs, 1% change), not measured here.
 
 **Eight held-out geometries** rather than five, but still eight. The
 per-geometry table matters more than the mean at this sample size, which is why
