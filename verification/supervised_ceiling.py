@@ -126,12 +126,26 @@ class OracleConditioned(PI_GINOT):
         self._geo = params
 
     def encode(self, boundary_pc, x_max, y_max, sample_ids=None):
-        """Latent from the geometry parameters.  ``boundary_pc`` is ignored."""
-        if self._geo is None:
-            raise RuntimeError("call set_geometry(params) before encode()")
+        """Latent from the stashed geometry parameters.
+
+        ``boundary_pc`` is ignored.  Deriving the parameters from it instead
+        was tried and abandoned: `L_total`, `W_grip` and `W_gauge` come back
+        exactly, but `R_fillet` does not.  The arc is tangent to the gauge, so
+        near `x_g` it departs from `y = H_gauge` quadratically and the tangency
+        point cannot be located from sampled boundary points without a fit --
+        worst-case error 79-88% on both banks.  Which is its own small echo of
+        Phase 4: the fillet is the hard parameter to recover even analytically.
+        """
+        geo = self._geo
+        if geo is None:
+            raise RuntimeError(
+                "OracleConditioned.encode: no geometry set.  The loss calls "
+                "set_geometry(params) for the training path; a diagnostic that "
+                "encodes outside the loss must call it too, or be skipped for "
+                "parameter-conditioned models.")
         dev = next(self.param_mlp.parameters()).device
         x = torch.tensor(
-            [[(float(self._geo[k]) - self._ranges[k][0])
+            [[(float(geo[k]) - self._ranges[k][0])
               / (self._ranges[k][1] - self._ranges[k][0])
               for k in self.PARAM_KEYS]], dtype=torch.float32, device=dev)
         return self.param_mlp(x).view(1, self._n_lat, self._dim)

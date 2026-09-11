@@ -79,6 +79,8 @@ def inspect_initial_state(model, device="cpu"):
     lam = MATERIAL_CONFIG["lam"]
 
     model.eval()
+    if hasattr(model, "set_geometry"):
+        model.set_geometry(mesh.params)
     z = model.encode(bpc, x_max, y_max)
     uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
         interior, z, u_delta, x_max, y_max
@@ -138,13 +140,21 @@ def main():
                         help="Checkpoint directory")
     parser.add_argument("--device", type=str, default=None,
                         help="Device: cpu or cuda")
+    parser.add_argument("--conditioning", type=str, default=None,
+                        choices=["pointcloud", "parameters"],
+                        help="Override the geometry conditioning path")
+    parser.add_argument("--loss_form", type=str, default=None,
+                        choices=["penalty", "energy"],
+                        help="Override the loss formulation")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Override the random seed")
     args, _ = parser.parse_known_args()
 
     # Seed
     # Seeds every RNG in play, pins cudnn, and asks torch for deterministic
     # kernels.  Must run before any tensor touches the GPU, because
     # CUBLAS_WORKSPACE_CONFIG is only read when the CUDA context is created.
-    set_deterministic(RANDOM_SEED)
+    set_deterministic(args.seed if args.seed is not None else RANDOM_SEED)
 
     # Device
     if args.device:
@@ -160,9 +170,32 @@ def main():
         config["learning_rate"] = args.lr
     if args.batch_size is not None:
         config["batch_size"] = args.batch_size
+    if args.conditioning is not None:
+        config["conditioning"] = args.conditioning
+    if args.loss_form is not None:
+        config["loss_form"] = args.loss_form
 
-    # Model
-    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
+    # Model.  The conditioning path is the project's largest measured lever;
+    # see config.TRAINING_CONFIG["conditioning"].
+    conditioning = config.get("conditioning", "pointcloud")
+    aux = config.get("w_geom_aux", 0.0) > 0.0
+    if conditioning == "parameters":
+        from verification.supervised_ceiling import OracleConditioned
+        model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
+                                  TRAINING_CONFIG["bank_geo_ranges"])
+        if aux:
+            raise SystemExit(
+                "w_geom_aux supervises the point-cloud encoder's extraction; "
+                "it is meaningless under conditioning='parameters', where the "
+                "parameters are supplied rather than extracted.")
+    elif conditioning == "pointcloud":
+        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG, aux_head=aux)
+    else:
+        raise SystemExit(f"unknown conditioning {conditioning!r}; expected "
+                         "'pointcloud' or 'parameters'")
+    print(f"  Conditioning: {conditioning}"
+          + (f" (+ geometry aux head, w={config['w_geom_aux']:g})"
+             if aux else ""))
 
     # Stress state
     stress_state = MATERIAL_CONFIG["state"]

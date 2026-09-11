@@ -237,6 +237,26 @@ TRAINING_CONFIG = {
     # See docs/phase4_geometry_encoder.md.  0.0 = off.
     "w_geom_aux": 0.0,
 
+    # Geometry conditioning path.
+    #   'pointcloud' — the GeometryEncoder over the boundary point cloud
+    #                  (default; generalises beyond the parametric family)
+    #   'parameters' — an MLP over the four dimensionless shape descriptors
+    #                  (geometry/descriptors.py), valid only for this
+    #                  parametric family, where the four numbers are known
+    #
+    # This is the single largest lever measured in the project.  At equal
+    # budget, on eight held-out geometries spanning taper 0.31-0.82 and over
+    # three seeds, 'parameters' beats 'pointcloud' by 3.32 +- 0.01 on the
+    # transverse displacement, 3.58 +- 0.31 on the axial one and 2.25 +- 0.14
+    # on von Mises; trained out to 1600 epochs the transverse ratio is 5.30.
+    # Phase 4 ruled out closing that gap by repairing the encoder in place --
+    # sampling resolution, a supervised geometry head, and both together each
+    # buy at most 1.21x.  See docs/phase4_geometry_encoder.md and
+    # docs/phase5_hardening.md.
+    #
+    # Default is 'pointcloud' so existing checkpoints and results stay valid.
+    "conditioning": "pointcloud",
+
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline
     "w_trac_top": 2.0,              # Reduced: equilibrium + resultant should drive learning

@@ -643,6 +643,12 @@ class PI_GINOT_Trainer:
         Uses the first `n_geo` no-hole val-bank geometries.
         Returns (mean_swap_du, mean_section_cv).
         """
+        if hasattr(self.model, "set_geometry"):
+            # Parameter-conditioned model: this gate probes the point-cloud
+            # encoder's latent-swap sensitivity, and there is no point-cloud
+            # encoder here.  Pass it rather than encode without a geometry set.
+            return (1.0, 0.0)
+
         n_geo = min(n_geo, len(self._val_bank))
         if n_geo < 2:
             return (1.0, 0.0)  # pass by default if not enough geos
