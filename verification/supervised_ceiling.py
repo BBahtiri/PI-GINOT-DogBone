@@ -59,8 +59,10 @@ from geometry.parametric_dogbone import generate_dogbone
 import torch.nn as nn
 
 from models.pi_ginot import PI_GINOT
+from physics.neo_hookean import full_stress_state, von_mises_stress
 from training.manifest import set_deterministic, write_manifest
 from verification.fem.mesh import build_mesh, default_h
+from verification.operator_study import REPORT_METRICS, mean_metric
 from verification.fem.solver import solve as fem_solve
 
 MU, LAM = MATERIAL_CONFIG["mu"], MATERIAL_CONFIG["lam"]
@@ -157,8 +159,12 @@ def _solve_cached(params, tag: str, h_factor: float):
     The solves dominate the cost of this study and do not depend on anything
     that changes between runs, so they are worth keeping.
     """
+    # The mesh factor belongs in the key.  Without it, asking for a finer
+    # reference returns the coarse solve that happened to be cached first,
+    # and the run reports whatever the earlier run measured -- the same
+    # defect that was fixed in verification.operator_study._REF_CACHE.
     os.makedirs(CACHE, exist_ok=True)
-    path = os.path.join(CACHE, f"{tag}.pkl")
+    path = os.path.join(CACHE, f"{tag}_h{float(h_factor):.2f}.pkl")
     if os.path.exists(path):
         with open(path, "rb") as fh:
             return pickle.load(fh)
@@ -171,15 +177,21 @@ def _solve_cached(params, tag: str, h_factor: float):
     return sol
 
 
-def _entries(n_train: int, seed: int = 7):
+def _entries(n_train: int, seed: int = 7, bank_seed: int = TRAIN_BANK_SEED,
+             pick=None):
     """Training geometries with a frozen mesh and collocation set.
 
     The trainer regenerates these each epoch; here they must be fixed, because
     the finite-element reference is tied to one realisation.
+
+    ``bank_seed`` and ``pick`` exist for the representability probe, which
+    trains on the validation geometries themselves.
     """
     params = build_geometry_bank(n_train, TRAINING_CONFIG["bank_geo_ranges"],
-                                 holes_on=False, seed=TRAIN_BANK_SEED,
+                                 holes_on=False, seed=bank_seed,
                                  mesh_only=True)
+    if pick is not None:
+        params = [params[i] for i in pick]
     rng = np.random.default_rng(seed)
     n_seg = cfg.COLLOCATION_CONFIG.get("n_boundary_per_segment", 400)
     out = []
@@ -200,7 +212,30 @@ def main():
                          "does not need every node and the decoder pass over "
                          "them dominates the cost")
     ap.add_argument("--val", default="2,11,13,16,19")
-    ap.add_argument("--h-factor", type=float, default=2.5)
+    ap.add_argument("--h-factor", type=float, default=1.3,
+                    help="reference element size = default_h * this. 1.3 "
+                         "since Phase 6.1: at 2.5 the reference's own K_t "
+                         "is biased low by up to 0.85%%, a third of the "
+                         "better model's error")
+    ap.add_argument("--train-on", default="train",
+                    choices=("train", "val"),
+                    help="'val' trains on the *same* geometries it scores. "
+                         "That is an overfit and is labelled one: it drops "
+                         "generalisation from the question and asks only "
+                         "whether the architecture can represent these "
+                         "fields at all, which is the cheapest decisive "
+                         "test of an architectural limit")
+    ap.add_argument("--supervise", default="disp",
+                    choices=("disp", "stress", "both"),
+                    help="disp: per-component relative error on (u, v) -- "
+                         "the original ceiling.  stress: von Mises at the "
+                         "element centroids plus an explicit peak term.  "
+                         "both: the sum")
+    ap.add_argument("--w-peak", type=float, default=1.0,
+                    help="weight on the peak-region term of the stress loss")
+    ap.add_argument("--n-peak", type=int, default=32,
+                    help="how many highest-reference-stress centroids form "
+                         "the peak region")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--params", default=None,
@@ -224,12 +259,20 @@ def main():
     print(f"  {args.bank} training geometries, {args.epochs} epochs, "
           f"batch {args.batch}, lr {args.lr}")
 
-    entries = _entries(args.bank)
+    val_idx = [int(g) for g in args.val.split(",")]
+    if args.train_on == "val":
+        print("  TRAINING ON THE VALIDATION GEOMETRIES — this is an overfit, "
+              "and measures representability, not generalisation")
+        entries = _entries(TRAINING_CONFIG["bank_val_size"],
+                           bank_seed=VAL_BANK_SEED, pick=val_idx)
+        tags = [f"val_{VAL_BANK_SEED}_{g}" for g in val_idx]
+    else:
+        entries = _entries(args.bank)
+        tags = [f"train_{TRAIN_BANK_SEED}_{i}" for i in range(len(entries))]
     targets = []
     t0 = time.time()
     for i, (gmesh, _) in enumerate(entries):
-        sol = _solve_cached(gmesh.params, f"train_{TRAIN_BANK_SEED}_{i}",
-                            args.h_factor)
+        sol = _solve_cached(gmesh.params, tags[i], args.h_factor)
         targets.append(sol)
         print(f"\r  reference solves: {i + 1}/{len(entries)}", end="",
               flush=True)
@@ -264,6 +307,15 @@ def main():
 
     packed = []
     for (gmesh, coll), sol in zip(entries, targets):
+        # Stress targets live at the element centroids, where the
+        # piecewise-constant finite-element stress is defined.  The peak set
+        # is the n_peak highest-reference-stress centroids, chosen once by
+        # the reference itself -- the network never has to find the peak
+        # region, only match it there.  That is deliberately the most
+        # favourable setting available, which is what makes a failure here
+        # informative and a success here only an upper bound.
+        vm_ref = sol.von_mises()
+        peak_idx = np.argsort(vm_ref)[-args.n_peak:]
         packed.append((
             gmesh.params,
             tens(coll.boundary_pc),
@@ -271,6 +323,9 @@ def main():
             tens(sol.u),
             torch.tensor([coll.x_max], dtype=torch.get_default_dtype()),
             torch.tensor([coll.y_max], dtype=torch.get_default_dtype()),
+            tens(sol.centroids),
+            tens(vm_ref[:, None])[..., 0],
+            torch.from_numpy(peak_idx.copy()).long(),
         ))
 
     u_delta = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
@@ -284,23 +339,58 @@ def main():
                          replace=False)
         total = torch.zeros((), device=args.device)
         for k in idx:
-            gparams, bpc, pts, ref, xm, ym = packed[k]
+            (gparams, bpc, pts, ref, xm, ym,
+             cent, vm_ref, peak_idx) = packed[k]
             if args.conditioning == "oracle":
                 model.set_geometry(gparams)
             sid = torch.tensor([int(k)], dtype=torch.long)
-            if args.n_points and pts.shape[1] > args.n_points:
-                sel = torch.from_numpy(
-                    rng.choice(pts.shape[1], args.n_points, replace=False))
-                pts, ref = pts[:, sel], ref[:, sel]
             z = model.encode(bpc, xm, ym, sample_ids=sid)
-            uv = model.decode(pts, z, u_delta, xm, ym)
-            # Per-component relative error: the preconditioning the energy
-            # functional does not have.  Without it this measures the same
-            # 183x imbalance from the data side and says nothing new.
-            for c in (0, 1):
-                d = uv[0, :, c] - ref[0, :, c]
-                total = total + (d.pow(2).sum()
-                                 / ref[0, :, c].pow(2).sum().clamp_min(1e-30))
+
+            if args.supervise in ("disp", "both"):
+                p_, r_ = pts, ref
+                if args.n_points and p_.shape[1] > args.n_points:
+                    sel = torch.from_numpy(
+                        rng.choice(p_.shape[1], args.n_points, replace=False))
+                    p_, r_ = p_[:, sel], r_[:, sel]
+                uv = model.decode(p_, z, u_delta, xm, ym)
+                # Per-component relative error: the preconditioning the
+                # energy functional does not have.  Without it this measures
+                # the same 183x imbalance from the data side and says
+                # nothing new.
+                for c in (0, 1):
+                    d = uv[0, :, c] - r_[0, :, c]
+                    total = total + (d.pow(2).sum()
+                                     / r_[0, :, c].pow(2).sum()
+                                     .clamp_min(1e-30))
+
+            if args.supervise in ("stress", "both"):
+                # A uniform subsample for the field term, plus the fixed
+                # peak set.  Concatenated into one forward pass so the two
+                # terms share a graph; the peak points are appended last so
+                # they can be sliced back off.
+                n_f = min(args.n_points or cent.shape[1], cent.shape[1])
+                sel = torch.from_numpy(
+                    rng.choice(cent.shape[1], n_f, replace=False))
+                qi = torch.cat([sel, peak_idx])
+                q = cent[:, qi].clone().requires_grad_(True)
+                t = vm_ref[:, qi]
+                _, a, b, c_, d_ = model.predict_with_grad_latent(
+                    q, z, u_delta, xm, ym)
+                S11, S22, S33, S12, _ = full_stress_state(
+                    a, b, c_, d_, MU, LAM, STATE)
+                vm = von_mises_stress(S11, S22, S33, S12)[0, :, 0]
+                e = vm[:n_f] - t[0, :n_f]
+                total = total + (e.pow(2).sum()
+                                 / t[0, :n_f].pow(2).sum().clamp_min(1e-30))
+                # The peak region, as a level rather than a maximum: the max
+                # over a subsample is a noisy statistic with a gradient
+                # reaching one point, while the mean over the reference's
+                # own top-n_peak carries the same information with a
+                # gradient reaching all of them.
+                if args.w_peak > 0.0:
+                    pk, pr = vm[n_f:].mean(), t[0, n_f:].mean()
+                    total = total + args.w_peak * (
+                        (pk - pr) / pr.clamp_min(1e-30)).pow(2)
         loss = total / len(idx)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(train_params, 1.0)
@@ -314,7 +404,6 @@ def main():
     torch.save({"model_state_dict": model.state_dict()},
                os.path.join(args.out, "last.pt"))
 
-    val_idx = [int(g) for g in args.val.split(",")]
     val_bank = build_geometry_bank(TRAINING_CONFIG["bank_val_size"],
                                    TRAINING_CONFIG["bank_geo_ranges"],
                                    holes_on=False, seed=VAL_BANK_SEED)
@@ -333,22 +422,47 @@ def main():
                      "u": r["disp_u_rel_L2"], "v": r["disp_v_rel_L2"],
                      "vm": r["vm_all"]["rel_L2"],
                      "vm_fillet": r["vm_fillet"]["rel_L2"],
+                     # Phase 6.1 metrics: this study's whole point is now
+                     # whether the architecture can deliver a concentration
+                     # factor, and a relative L2 cannot answer that.
+                     "vm_peak": r["vm_all"]["peak_rel_err"],
+                     "vm_fillet_Linf": r["vm_fillet"]["max"],
+                     "scf": r["scf_rel_err"],
+                     "scf_ref": r["scf_ref"], "scf_pinn": r["scf_pinn"],
+                     "x_peak_ref": r["x_peak_ref"],
+                     "x_peak_pinn": r["x_peak_pinn"],
+                     "x_peak_err": r["x_peak_err"],
                      "N_err": r["N_rel_err"]})
         print(f"    geo {gi:>2} (taper {rows[-1]['taper']:.2f}): "
               f"u={rows[-1]['u']:.3e} v={rows[-1]['v']:.3e} "
-              f"vm={rows[-1]['vm']:.3e} N={100 * rows[-1]['N_err']:+.1f}%",
-              flush=True)
+              f"vm={rows[-1]['vm']:.3e} "
+              f"peak={100 * rows[-1]['vm_peak']:+.1f}% "
+              f"SCF={rows[-1]['scf_pinn']:.3f}/{rows[-1]['scf_ref']:.3f} "
+              f"N={100 * rows[-1]['N_err']:+.1f}%", flush=True)
 
-    m = lambda k: float(np.mean([x[k] for x in rows]))
-    print("\n" + "-" * 78)
-    print(f"  supervised mean: u={m('u'):.3e} v={m('v'):.3e} "
-          f"vm={m('vm'):.3e} vm_fillet={m('vm_fillet'):.3e}")
-    print(f"  energy form, same bank/held-out set: u=2.584e-02 v=3.581e-01 "
-          f"vm=8.428e-02 vm_fillet=1.200e-01")
+    hdr = "".join(f"{k:>15}" for k in REPORT_METRICS) + f"{'|N err|':>9}"
+    print("\n" + "=" * len(hdr))
+    print(f"  supervise={args.supervise}, conditioning={args.conditioning}, "
+          f"mean over {len(rows)} held-out geometries")
+    print(hdr)
+    print("-" * len(hdr))
+    print("".join(f"{mean_metric(rows, k):>15.3e}" for k in REPORT_METRICS)
+          + f"{100 * mean_metric(rows, 'N_err'):>8.1f}%")
+    ref = np.array([x["scf_ref"] for x in rows])
+    prd = np.array([x["scf_pinn"] for x in rows])
+    r2 = 1 - ((prd - ref) ** 2).sum() / ((ref - ref.mean()) ** 2).sum()
+    const = float(np.mean(np.abs(ref - ref.mean()) / ref))
+    print(f"\n  K_t: R^2 = {r2:+.2f}  corr = {np.corrcoef(prd, ref)[0, 1]:+.3f}"
+          f"  sd(pred) = {prd.std(ddof=1):.4f} vs reference "
+          f"{ref.std(ddof=1):.4f}")
+    print(f"       predicting the bank mean costs {100 * const:.2f}%; "
+          f"this arm costs {100 * mean_metric(rows, 'scf'):.2f}%")
+    print(f"  mean |x* error| = "
+          f"{np.mean(np.abs([x['x_peak_err'] for x in rows])):.3f} x_g")
     import json
     with open(os.path.join(args.out, "result.json"), "w") as fh:
-        json.dump({"rows": rows, "args": vars(args)}, fh, indent=2,
-                  default=float)
+        json.dump({"rows": rows, "args": vars(args),
+                   "K_t_R2": float(r2)}, fh, indent=2, default=float)
 
 
 if __name__ == "__main__":
