@@ -77,6 +77,12 @@ def draws_for(model, gi, bank, sol, n_draws, device, base_seed=9000):
         # grouping indices by id, so reusing one would score a new cloud
         # against the previous cloud's sampling and hide the effect entirely.
         sid = 10_000 + 100 * gi + d
+        # A parameter-conditioned model needs its geometry stashed, and is
+        # the right null control for this harness: it never reads the cloud,
+        # so its spread over draws must come out at exactly zero.  If it does
+        # not, the harness is measuring something other than the sampling.
+        if hasattr(model, "set_geometry"):
+            model.set_geometry(gmesh.params)
         r = compare_one(model, gmesh.params, LOADING_CONFIG["u_max"], None,
                         device, sample_id=sid, coll=coll, sol=sol)
         out.append({k: f(r) for k, (f, _) in METRICS.items()})
@@ -130,7 +136,7 @@ def main():
     print("\n" + "=" * 86)
     print("Across geometries: spread over draws, against the model's own "
           "error in the same metric")
-    hdr = (f"{'metric':>12}{'mean':>13}{'sd over draws':>16}"
+    hdr = (f"{'metric':>12}{'mean |.|':>13}{'sd over draws':>16}"
            f"{'max sd':>11}{'sd / |mean|':>13}")
     print(hdr)
     print("-" * len(hdr))
@@ -138,11 +144,14 @@ def main():
     for k, (_, signed) in METRICS.items():
         a = np.array([[r[k] for r in per_geo[g]] for g in val])   # [geo, draw]
         sd = a.std(axis=1, ddof=1)
+        # Signed metrics are summarised by magnitude: their signed mean
+        # cancels across geometries (a peak low on one, high on another) and
+        # would make the ratio below meaningless.
         mean = np.abs(a).mean()
-        summary[k] = {"mean": float(a.mean()), "abs_mean": float(mean),
+        summary[k] = {"signed_mean": float(a.mean()), "abs_mean": float(mean),
                       "sd_mean": float(sd.mean()), "sd_max": float(sd.max()),
                       "ratio": float(sd.mean() / max(mean, 1e-300))}
-        print(f"{k:>12}{a.mean():>13.3e}{sd.mean():>16.3e}"
+        print(f"{k:>12}{mean:>13.3e}{sd.mean():>16.3e}"
               f"{sd.max():>11.3e}{sd.mean() / max(mean, 1e-300):>13.3f}")
     print("-" * len(hdr))
     print("  A ratio near 1 means which points the model was handed matters "
