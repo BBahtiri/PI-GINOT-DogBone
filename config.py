@@ -184,6 +184,20 @@ TRAINING_CONFIG = {
     #               Default stays 'penalty' until the operator is retrained,
     #               so existing results remain comparable.
     "loss_form": "penalty",
+    # 'hybrid':     the energy functional with the equilibrium residual added
+    #               back.  loss_form had always been one form or the other;
+    #               Phase 2 compared them, the energy form won, and L_eq left
+    #               the objective with the form that carried it.  Phase 6.4
+    #               made the sum worth trying: supervising this architecture
+    #               on stress reaches K_t R^2 +0.98, while a 0.2% displacement
+    #               fit on the very specimens it is scored on still gives
+    #               R^2 -0.55 -- so the objective needs a term sensitive to
+    #               the stress, and L_eq is the only one the physics offers
+    #               without changing the architecture.  Tractions stay
+    #               natural BCs.  See physics/weak_form.py::HybridLoss.
+    "w_equilibrium_hybrid": 100.0,  # same nondimensionalisation as
+                                    # w_equilibrium, so the penalty form's
+                                    # value is the sensible starting point
     "energy_quad_degree": 2,        # fixed-rule degree (unused when resampling)
     "energy_n_elem": 1400,          # quadrature triangles per geometry
     "energy_resample": True,        # stratified resampling — DO NOT disable:

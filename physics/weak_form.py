@@ -88,6 +88,7 @@ import torch
 import torch.nn as nn
 
 from geometry.triangulation import cached_mesh, quadrature
+from physics.equilibrium import equilibrium_residual
 from physics.neo_hookean import (deformation_gradient, require_stress_state,
                                  solve_F33_plane_stress, strain_energy_density)
 
@@ -260,11 +261,17 @@ class EnergyLoss(nn.Module):
     def forward(self, model, params: dict, boundary_pc, u_delta, x_max,
                 y_max=None, sample_ids=None, geometry_latent=None,
                 trac_free_pts=None, trac_free_normals=None,
-                trac_free_tags=None) -> dict:
+                trac_free_tags=None, interior_pts=None) -> dict:
         """Energy loss for one geometry.
 
         ``params`` selects the cached quadrature mesh; ``boundary_pc`` is the
         encoder input, exactly as in PhysicsLoss.
+
+        ``interior_pts`` is accepted and ignored here.  The energy uses its
+        own quadrature mesh and has no use for the collocation points, but
+        ``HybridLoss`` does, and the trainer threads them unconditionally for
+        the same reason it threads the traction points: passing them only on
+        the branch that needs them is how the branches drift apart.
         """
         if geometry_latent is None:
             # A model conditioned on geometry parameters rather than on the
@@ -388,3 +395,78 @@ def reference_energy(sol, mu: float, lam: float, stress_state: str) -> float:
     Psi = strain_energy_density(*g, mu, lam, stress_state)
     w = torch.tensor(sol.mesh.areas, dtype=torch.float64)
     return float((Psi[0, :, 0] * w).sum())
+
+
+class HybridLoss(EnergyLoss):
+    """The energy functional with the equilibrium residual added back.
+
+    Why this exists
+    ---------------
+    ``loss_form`` has always been ``energy`` XOR ``penalty``.  Phase 2
+    compared them and the energy form won, and the equilibrium residual went
+    out of the objective with the form that carried it.  Nobody ran the sum.
+
+    Phase 6.4 made that gap worth closing.  Supervising this architecture on
+    *stress* reaches a concentration factor of 0.39% and ``K_t`` R^2 +0.98;
+    supervising it on *displacement* to 0.2% -- on the very specimens it is
+    scored on, so with no generalisation, conditioning, capacity or
+    optimisation gap left to blame -- still gives 3.15%, worse than
+    predicting a constant, at R^2 -0.55.  Stress is a derivative of the
+    output, and the concentration lives entirely in that derivative.  So the
+    objective needs a term whose gradient is sensitive to the stress, and the
+    equilibrium residual is the only such term the physics offers without
+    changing the architecture.
+
+    What is and is not added
+    ------------------------
+    Only ``L_eq``.  The traction conditions stay natural BCs of the energy
+    minimum: Phase 2 measured that they work that way, and reintroducing them
+    as penalties would bring back the weighting problem the energy form
+    removed.  The determinant barrier is already in ``EnergyLoss``.
+
+    The residual is nondimensionalised by ``L0 / S0`` exactly as in
+    ``PhysicsLoss``, so ``w_eq`` means the same thing in both and a weight
+    that worked there is a sensible starting point here.
+
+    The caveat worth stating before the sweep
+    -----------------------------------------
+    ``L_eq`` is a volume average, like the energy.  A peak over a small
+    region contributes to it in proportion to that region's share of the
+    sample, so this may be just as blind to the concentration as the energy
+    is.  If so, the fix is not a larger weight but a sampler that puts points
+    where the residual is large -- which is Step 3, and this is the cheapest
+    setting in which to test it.
+    """
+
+    def __init__(self, *args, w_eq: float = 1.0, L0: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.register_buffer("w_eq", torch.tensor(float(w_eq)))
+        self.L0 = float(L0)
+
+    def forward(self, model, params: dict, boundary_pc, u_delta, x_max,
+                y_max=None, sample_ids=None, geometry_latent=None,
+                trac_free_pts=None, trac_free_normals=None,
+                trac_free_tags=None, interior_pts=None) -> dict:
+        out = super().forward(
+            model, params, boundary_pc, u_delta, x_max, y_max, sample_ids,
+            geometry_latent, trac_free_pts, trac_free_normals,
+            trac_free_tags)
+
+        if interior_pts is None or float(self.w_eq) == 0.0:
+            # Reported as zero rather than omitted, so a w_eq=0 arm produces
+            # the same log keys as the others and is directly comparable to
+            # the plain energy form it should reproduce.
+            out["L_eq"] = torch.zeros((), device=out["loss"].device)
+            out["L_eq_log"] = 0.0
+            return out
+
+        eq_scale = self.L0 / self.S0
+        f_x, f_y, _, _ = equilibrium_residual(
+            model, interior_pts, out["geometry_latent"], u_delta, x_max,
+            self.mu, self.lam, y_max, self.stress_state, return_J3D=True)
+        L_eq = torch.mean((eq_scale * f_x) ** 2 + (eq_scale * f_y) ** 2)
+
+        out["loss"] = out["loss"] + self.w_eq * L_eq
+        out["L_eq"] = L_eq
+        out["L_eq_log"] = float(L_eq.detach())
+        return out

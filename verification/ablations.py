@@ -247,6 +247,28 @@ ARMS = {
         {"_precision": "float64",
          "_decoder": {"output_scale": [1.0, 0.289]}}, {},
         "both, in case either alone is masked by the other"),
+    # --- Phase 6 Step 4 precursor: does the energy form recover any K_t
+    # skill when the equilibrium residual is added back?  Phase 6.4 showed
+    # the architecture can reach R^2 +0.98 under stress supervision and
+    # -0.55 under a 0.2% displacement fit, so the objective needs a term
+    # sensitive to stress.  L_eq is the only one available without a second
+    # output head.  The weights bracket the penalty form's own w_equilibrium
+    # of 100 by two orders of magnitude either side, because nothing is known
+    # about the right scale when the term sits next to an energy rather than
+    # next to other penalties.
+    "hybrid-1": (
+        "hybrid", {"w_equilibrium_hybrid": 1.0}, {},
+        "energy + equilibrium, w_eq 1 -- a nudge"),
+    "hybrid-100": (
+        "hybrid", {"w_equilibrium_hybrid": 100.0}, {},
+        "energy + equilibrium at the penalty form's own weight"),
+    "hybrid-10000": (
+        "hybrid", {"w_equilibrium_hybrid": 1e4}, {},
+        "energy + equilibrium, w_eq 1e4 -- the residual dominates"),
+    "hybrid-0": (
+        "hybrid", {"w_equilibrium_hybrid": 0.0}, {},
+        "control: the hybrid path at zero weight must reproduce energy-w0, "
+        "or the plumbing is changing something it should not"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "

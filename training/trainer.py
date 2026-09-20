@@ -599,7 +599,8 @@ class PI_GINOT_Trainer:
                                       y_m, sample_ids=v_sid,
                                       trac_free_pts=tf_pts,
                                       trac_free_normals=tf_norms,
-                                      trac_free_tags=tf_tags)
+                                      trac_free_tags=tf_tags,
+                                      interior_pts=interior)
                 else:
                     ld = self.loss_fn(
                         self.model, interior, tf_pts, tf_norms, tf_tags,
@@ -877,6 +878,11 @@ class PI_GINOT_Trainer:
                 sample_ids=sample_ids,
                 trac_free_pts=tf_pts, trac_free_normals=tf_norms,
                 trac_free_tags=tf_tags,
+                # Ignored by EnergyLoss, used by HybridLoss.  Threaded
+                # unconditionally for the same reason the traction points
+                # are: a kwarg passed only on the branch that needs it is
+                # how the two branches drift apart.
+                interior_pts=interior,
             )
             # Keep the log keys the epoch summary expects.
             for k in ("L_eq", "L_trac_top", "L_trac_arc", "L_trac_hole",

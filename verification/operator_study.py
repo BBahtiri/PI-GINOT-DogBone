@@ -81,6 +81,20 @@ class _Budget:
 
 
 def _build_loss(form: str, c: dict):
+    if form == "hybrid":
+        # The energy functional with the equilibrium residual added back --
+        # a combination that had never been run, because loss_form was
+        # always one form or the other.  See physics.weak_form.HybridLoss.
+        from physics.weak_form import HybridLoss
+        return HybridLoss(
+            mu=MU, lam=LAM, stress_state=STATE,
+            n_elem_target=c["energy_n_elem"], resample=True,
+            w_barrier=c["w_barrier"], j_min=c["barrier_delta"],
+            E_scale=NONDIM_SCALES["S0"],
+            w_trac_top=c.get("energy_w_trac_top", 0.0),
+            w_trac_arc=c.get("energy_w_trac_arc", 0.0),
+            S0=NONDIM_SCALES["S0"], L0=NONDIM_SCALES["L0"],
+            w_eq=c.get("w_equilibrium_hybrid", 1.0))
     if form == "energy":
         return EnergyLoss(
             mu=MU, lam=LAM, stress_state=STATE,
