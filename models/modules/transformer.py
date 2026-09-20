@@ -135,7 +135,7 @@ class CrossAttentionBlocks(nn.Module):
 # %%
 
 
-def sinusoidal_positional_encoding(length, d_model, dtype=torch.float32):
+def sinusoidal_positional_encoding(length, d_model, dtype=torch.get_default_dtype()):
     """Positional encoding for transformer models using PyTorch.
     Args:
       length: Length of the sequence.

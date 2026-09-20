@@ -112,10 +112,10 @@ def build_dataset(n: int, seed: int, device: str, model, cache: str = None):
                                        holes_enabled=False)
             mesh = generate_dogbone(p, n_pts_per_segment=n_seg, rng=rng)
             coll = sample_collocation_points(mesh, rng=rng)
-            bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
+            bpc = torch.tensor(coll.boundary_pc, dtype=torch.get_default_dtype(),
                                device=device).unsqueeze(0)
-            xm = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-            ym = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
+            xm = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+            ym = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
             z = model.encode(bpc, xm, ym,
                              sample_ids=torch.tensor([i], dtype=torch.long))
             # Keep the full token set; the caller pools it as needed.

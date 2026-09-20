@@ -66,14 +66,14 @@ def inspect_initial_state(model, device="cpu"):
         coll = sample_collocation_points(mesh, rng=rng)
 
     def _t(arr, req=False):
-        t = torch.tensor(arr, dtype=torch.float32, device=device).unsqueeze(0)
+        t = torch.tensor(arr, dtype=torch.get_default_dtype(), device=device).unsqueeze(0)
         return t.requires_grad_(req) if req else t
 
     interior = _t(coll.interior_pts[:500], req=True)
     bpc = _t(coll.boundary_pc)
-    u_delta = torch.tensor([1.0], dtype=torch.float32, device=device)
-    x_max = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-    y_max = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
+    u_delta = torch.tensor([1.0], dtype=torch.get_default_dtype(), device=device)
+    x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+    y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
 
     mu = MATERIAL_CONFIG["mu"]
     lam = MATERIAL_CONFIG["lam"]

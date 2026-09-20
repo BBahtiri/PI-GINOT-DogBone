@@ -110,8 +110,30 @@ class PhysicsDecoder(nn.Module):
         # Configurable PE frequency cap (default 6 → max freq 2^5 = 32)
         pe_max_deg = config.get("pe_max_deg", 6)
 
-        # Output correction scale (keeps initial corrections small)
-        self.output_scale = config.get("output_scale", 1e-3)
+        # Output correction scale, per component.  A scalar applies to both
+        # heads; a pair scales (phi_u, phi_v) separately.
+        #
+        # What the two heads are asked for is not what the two *fields* look
+        # like, and that difference is the whole reason a per-component scale
+        # is worth anything here.  Measured on the finite-element reference
+        # over the eight held-out geometries: ||v||/||u|| is 0.042-0.062, a
+        # 16-24x imbalance -- but the ansatz divides v by eta = y/H_grip,
+        # which spans [0, 1], so the *head* only has to produce rms phi_v
+        # 0.084 against rms phi_u 0.290.  The residual imbalance is 3.46x,
+        # not 20x; the hard-BC layer had already absorbed the rest.  Setting
+        # the scale from the fields rather than from the heads would have
+        # over-corrected by a factor of six.
+        #
+        # Registered non-persistent so it stays a configuration choice and
+        # every checkpoint written before it existed still loads.
+        _sc = torch.as_tensor(config.get("output_scale", 1e-3),
+                              dtype=torch.get_default_dtype()).reshape(-1)
+        if _sc.numel() == 1:
+            _sc = _sc.repeat(out_ch)
+        elif _sc.numel() != out_ch:
+            raise ValueError(f"output_scale must be a scalar or {out_ch} "
+                             f"values, got {_sc.numel()}")
+        self.register_buffer("output_scale", _sc, persistent=False)
 
         # Query-point encoder: NeRF PE + projection → embed_dim
         self.q_posenc = PosEmbLinear("nerf", in_ch, embed_dim, max_deg=pe_max_deg)

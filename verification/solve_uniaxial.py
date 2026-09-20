@@ -99,7 +99,7 @@ def exact_solution(u_delta: float, L_half: float) -> dict:
 
 def _tensors(coll, device, u_delta):
     def T(a):
-        return torch.tensor(a, dtype=torch.float32,
+        return torch.tensor(a, dtype=torch.get_default_dtype(),
                             device=device).unsqueeze(0)
     return dict(
         interior=T(coll.interior_pts).requires_grad_(True),
@@ -112,9 +112,9 @@ def _tensors(coll, device, u_delta):
         pt_dirs=torch.tensor(coll.partial_traction_dirs, dtype=torch.long,
                              device=device),
         bpc=T(coll.boundary_pc),
-        u_d=torch.tensor([u_delta], dtype=torch.float32, device=device),
-        x_m=torch.tensor([coll.x_max], dtype=torch.float32, device=device),
-        y_m=torch.tensor([coll.y_max], dtype=torch.float32, device=device),
+        u_d=torch.tensor([u_delta], dtype=torch.get_default_dtype(), device=device),
+        x_m=torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device),
+        y_m=torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device),
         sid=torch.tensor([0], dtype=torch.long, device=device),
     )
 
@@ -128,7 +128,7 @@ def evaluate(model, coll, fi, u_delta, device) -> dict:
     z = model.encode(t["bpc"], t["x_m"], t["y_m"], sample_ids=t["sid"])
 
     pts = coll.interior_pts.astype(np.float64)
-    q = torch.tensor(pts, dtype=torch.float32,
+    q = torch.tensor(pts, dtype=torch.get_default_dtype(),
                      device=device).unsqueeze(0).requires_grad_(True)
     uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
         q, z, t["u_d"], t["x_m"], t["y_m"])

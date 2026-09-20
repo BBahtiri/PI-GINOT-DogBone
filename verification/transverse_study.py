@@ -96,7 +96,7 @@ def is_energy(name: str) -> bool:
 
 def _tensors(coll, device, u_delta, sample_id):
     def T(a):
-        return torch.tensor(a, dtype=torch.float32,
+        return torch.tensor(a, dtype=torch.get_default_dtype(),
                             device=device).unsqueeze(0)
     return dict(
         interior=T(coll.interior_pts).requires_grad_(True),
@@ -109,9 +109,9 @@ def _tensors(coll, device, u_delta, sample_id):
         pt_dirs=torch.tensor(coll.partial_traction_dirs, dtype=torch.long,
                              device=device),
         bpc=T(coll.boundary_pc),
-        u_d=torch.tensor([u_delta], dtype=torch.float32, device=device),
-        x_m=torch.tensor([coll.x_max], dtype=torch.float32, device=device),
-        y_m=torch.tensor([coll.y_max], dtype=torch.float32, device=device),
+        u_d=torch.tensor([u_delta], dtype=torch.get_default_dtype(), device=device),
+        x_m=torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device),
+        y_m=torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device),
         sid=torch.tensor([sample_id], dtype=torch.long, device=device),
     )
 

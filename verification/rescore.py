@@ -32,6 +32,7 @@ import torch
 
 from config import DECODER_CONFIG, ENCODER_CONFIG, TRAINING_CONFIG
 from models.pi_ginot import PI_GINOT
+from training.manifest import set_precision
 from verification.operator_study import (REPORT_METRICS, evaluate,
                                          mean_metric)
 
@@ -75,6 +76,12 @@ def main():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--encoder", default=None,
                     help='JSON encoder overrides, e.g. \'{"n_point": 128}\'')
+    ap.add_argument("--precision", default="float32",
+                    choices=("float32", "float64"),
+                    help="evaluate at this precision. A float32 checkpoint "
+                         "loads into a float64 model (load_state_dict casts), "
+                         "so this measures the forward path's arithmetic "
+                         "without retraining anything")
     ap.add_argument("--h-factor", type=float, default=1.3,
                     help="reference element size = default_h * this. The "
                          "default 1.3 holds the reference's own K_t "
@@ -90,13 +97,14 @@ def main():
                          "checkpoint")
     args = ap.parse_args()
 
+    set_precision(args.precision)
     tag = args.tag or os.path.basename(os.path.dirname(args.checkpoint))
     enc_over = json.loads(args.encoder) if args.encoder else None
     model, ck = load(args.checkpoint, args.conditioning, args.device,
                      enc_over)
     epoch = ck.get("epoch", -1)
-    print(f"Re-scoring {tag} ({args.conditioning}, epoch {epoch}) in the "
-          "stress-concentration norms")
+    print(f"Re-scoring {tag} ({args.conditioning}, epoch {epoch}, "
+          f"{args.precision}) in the stress-concentration norms")
     print("=" * 78, flush=True)
 
     val = [int(g) for g in args.val.split(",")]
@@ -118,6 +126,7 @@ def main():
         json.dump({"tag": tag, "checkpoint": args.checkpoint,
                    "conditioning": args.conditioning, "epoch": epoch,
                    "ref_h_factor": args.h_factor,
+                   "precision": args.precision,
                    "rows": rows}, fh, indent=2, default=float)
     print(f"\nWrote {out}")
 

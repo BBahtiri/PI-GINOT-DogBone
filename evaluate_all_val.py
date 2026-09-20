@@ -58,7 +58,7 @@ def evaluate_geometry(model, mesh, coll, device):
     state = MATERIAL_CONFIG["state"]
 
     def _t(arr):
-        return torch.tensor(arr, dtype=torch.float32, device=device).unsqueeze(0)
+        return torch.tensor(arr, dtype=torch.get_default_dtype(), device=device).unsqueeze(0)
 
     pts_np = coll.interior_pts
     # Need grads for stress computation
@@ -66,10 +66,10 @@ def evaluate_geometry(model, mesh, coll, device):
         query = _t(pts_np).requires_grad_(True)
         bpc = _t(coll.boundary_pc)
         u_delta = torch.tensor(
-            [LOADING_CONFIG["u_max"]], dtype=torch.float32, device=device
+            [LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(), device=device
         )
-        x_max = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-        y_max = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
+        x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+        y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
 
         z = model.encode(bpc, x_max, y_max)
         uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(

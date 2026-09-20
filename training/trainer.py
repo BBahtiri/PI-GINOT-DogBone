@@ -312,8 +312,12 @@ class PI_GINOT_Trainer:
                 frac = min(1.0, epoch / bar_warm)
                 self.loss_fn.w_bar.fill_(bar_w0 * (bar_wT / bar_w0) ** frac)
 
-            # Output scale: fixed at 1.0 (no warmup — let network correct from epoch 0)
-            self.model.decoder.output_scale = 1.0
+            # The output scale used to be warmed up here.  The warmup was
+            # removed but its per-epoch assignment was not, so this line
+            # overwrote the decoder's configured scale with 1.0 on every
+            # epoch of every run -- DECODER_CONFIG["output_scale"] has been
+            # dead config since.  The decoder owns the scale now; nothing
+            # here should touch it.
 
             # Section-resultant: ON from epoch 0 (no ramp)
             # This is the primary force for breaking the uniform-strain baseline
@@ -565,7 +569,7 @@ class PI_GINOT_Trainer:
 
         for val_idx, (mesh, coll) in enumerate(self._val_set):
             def _t(arr):
-                return torch.tensor(arr, dtype=torch.float32,
+                return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                     device=self.device).unsqueeze(0)
 
             interior = _t(coll.interior_pts).requires_grad_(True)
@@ -576,9 +580,9 @@ class PI_GINOT_Trainer:
             pt_dirs = torch.tensor(coll.partial_traction_dirs,
                                    dtype=torch.long, device=self.device)
             bpc = _t(coll.boundary_pc)
-            u_d = torch.tensor([u_max], dtype=torch.float32, device=self.device)
-            x_m = torch.tensor([coll.x_max], dtype=torch.float32, device=self.device)
-            y_m = torch.tensor([coll.y_max], dtype=torch.float32, device=self.device)
+            u_d = torch.tensor([u_max], dtype=torch.get_default_dtype(), device=self.device)
+            x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=self.device)
+            y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=self.device)
 
             tf_tags = torch.tensor(coll.traction_free_tags,
                                    dtype=torch.long, device=self.device)
@@ -662,11 +666,11 @@ class PI_GINOT_Trainer:
         colls = []
         for i in range(n_geo):
             mesh, coll = self._val_bank[i]
-            bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
+            bpc = torch.tensor(coll.boundary_pc, dtype=torch.get_default_dtype(),
                                device=self.device).unsqueeze(0)
-            x_m = torch.tensor([coll.x_max], dtype=torch.float32,
+            x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(),
                                device=self.device)
-            y_m = torch.tensor([coll.y_max], dtype=torch.float32,
+            y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(),
                                device=self.device)
             sid = torch.tensor([100 + i], dtype=torch.long, device=self.device)
             z = self.model.encode(bpc, x_m, y_m, sample_ids=sid)
@@ -677,13 +681,13 @@ class PI_GINOT_Trainer:
         swap_du_vals = []
         for i in range(n_geo):
             coll_i = colls[i]
-            query = torch.tensor(coll_i.interior_pts, dtype=torch.float32,
+            query = torch.tensor(coll_i.interior_pts, dtype=torch.get_default_dtype(),
                                  device=self.device).unsqueeze(0)
-            u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.float32,
+            u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
                                device=self.device)
-            x_m = torch.tensor([coll_i.x_max], dtype=torch.float32,
+            x_m = torch.tensor([coll_i.x_max], dtype=torch.get_default_dtype(),
                                device=self.device)
-            y_m = torch.tensor([coll_i.y_max], dtype=torch.float32,
+            y_m = torch.tensor([coll_i.y_max], dtype=torch.get_default_dtype(),
                                device=self.device)
 
             # Correct latent
@@ -835,7 +839,7 @@ class PI_GINOT_Trainer:
             self._save_geometry_plot(mesh, epoch, geo_idx)
 
         def _t(arr):
-            return torch.tensor(arr, dtype=torch.float32,
+            return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                 device=self.device).unsqueeze(0)
 
         interior = _t(coll.interior_pts).requires_grad_(True)
@@ -848,9 +852,9 @@ class PI_GINOT_Trainer:
         pt_dirs = torch.tensor(coll.partial_traction_dirs,
                                dtype=torch.long, device=self.device)
         bpc = _t(coll.boundary_pc)
-        u_delta = torch.tensor([u_max], dtype=torch.float32, device=self.device)
-        x_max = torch.tensor([coll.x_max], dtype=torch.float32, device=self.device)
-        y_max = torch.tensor([coll.y_max], dtype=torch.float32, device=self.device)
+        u_delta = torch.tensor([u_max], dtype=torch.get_default_dtype(), device=self.device)
+        x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=self.device)
+        y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=self.device)
 
         # Deterministic FPS for bank geometries (sample_ids enables caching)
         sample_ids = None
@@ -894,7 +898,7 @@ class PI_GINOT_Trainer:
         if w_geom > 0.0 and getattr(self.model, "geom_aux_head", None):
             from geometry.descriptors import standardised_ratios
             tgt = torch.tensor(standardised_ratios(mesh.params),
-                               dtype=torch.float32,
+                               dtype=torch.get_default_dtype(),
                                device=self.device).unsqueeze(0)
             pred = self.model.predict_geometry(loss_dict["geometry_latent"])
             L_geom = (pred - tgt).pow(2).mean()
@@ -1071,7 +1075,7 @@ class PI_GINOT_Trainer:
             n_pts = len(y_vals)
 
             pts = np.stack([np.full(n_pts, x_k), y_vals], axis=-1)
-            query = torch.tensor(pts, dtype=torch.float32,
+            query = torch.tensor(pts, dtype=torch.get_default_dtype(),
                                  device=self.device).unsqueeze(0)
             query.requires_grad_(True)
 
@@ -1082,7 +1086,7 @@ class PI_GINOT_Trainer:
                 du_dx, du_dy, dv_dx, dv_dy, mu, lam, state
             )
 
-            dy_t = torch.tensor(dy_vals, dtype=torch.float32,
+            dy_t = torch.tensor(dy_vals, dtype=torch.get_default_dtype(),
                                 device=self.device)
             N_k = 2.0 * (P11[0, :, 0] * dy_t).sum()
             resultants.append(N_k)
@@ -1200,7 +1204,7 @@ class PI_GINOT_Trainer:
         dy = H_grip / n_y_pts
 
         pts = np.stack([np.full(n_y_pts, L_half), y_mid], axis=-1)
-        query = torch.tensor(pts, dtype=torch.float32,
+        query = torch.tensor(pts, dtype=torch.get_default_dtype(),
                              device=self.device).unsqueeze(0)
         query.requires_grad_(True)
 
@@ -1238,12 +1242,12 @@ class PI_GINOT_Trainer:
         lam = MATERIAL_CONFIG["lam"]
         u_max = LOADING_CONFIG["u_max"]
 
-        x_m = torch.tensor([coll.x_max], dtype=torch.float32, device=self.device)
-        y_m = torch.tensor([coll.y_max], dtype=torch.float32, device=self.device)
-        u_d = torch.tensor([u_max], dtype=torch.float32, device=self.device)
+        x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=self.device)
+        y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=self.device)
+        u_d = torch.tensor([u_max], dtype=torch.get_default_dtype(), device=self.device)
 
         # Encode geometry (deterministic for val bank)
-        bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
+        bpc = torch.tensor(coll.boundary_pc, dtype=torch.get_default_dtype(),
                            device=self.device).unsqueeze(0)
         v_sid = torch.tensor([100 + val_idx], dtype=torch.long, device=self.device)
         z = self.model.encode(bpc, x_m, y_m, sample_ids=v_sid)
@@ -1267,7 +1271,7 @@ class PI_GINOT_Trainer:
             dy = w_k / n_y
 
             pts = np.stack([np.full(n_y, x_k), y_vals], axis=-1)
-            query = torch.tensor(pts, dtype=torch.float32,
+            query = torch.tensor(pts, dtype=torch.get_default_dtype(),
                                  device=self.device).unsqueeze(0)
             query.requires_grad_(True)
 
@@ -1343,17 +1347,17 @@ class PI_GINOT_Trainer:
         Returns dict with keys: x, y, u, delta_u, v, S11, E11, params.
         """
         def _t(arr):
-            return torch.tensor(arr, dtype=torch.float32,
+            return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                 device=self.device).unsqueeze(0)
 
         pts_np = coll.interior_pts
         query = _t(pts_np).requires_grad_(True)
         bpc = _t(coll.boundary_pc)
         u_delta = torch.tensor([LOADING_CONFIG["u_max"]],
-                               dtype=torch.float32, device=self.device)
-        x_max = torch.tensor([coll.x_max], dtype=torch.float32,
+                               dtype=torch.get_default_dtype(), device=self.device)
+        x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(),
                              device=self.device)
-        y_max = torch.tensor([coll.y_max], dtype=torch.float32,
+        y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(),
                              device=self.device)
 
         with torch.enable_grad():
@@ -1613,7 +1617,7 @@ class PI_GINOT_Trainer:
             coll = sample_collocation_points(mesh, rng=self.rng)
 
         def _t(arr):
-            return torch.tensor(arr, dtype=torch.float32,
+            return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                 device=self.device).unsqueeze(0)
 
         # Construct sample_ids for bank geometries
@@ -1634,9 +1638,9 @@ class PI_GINOT_Trainer:
             torch.tensor(coll.partial_traction_dirs, dtype=torch.long,
                          device=self.device),
             _t(coll.boundary_pc),
-            torch.tensor([u_max], dtype=torch.float32, device=self.device),
-            torch.tensor([coll.x_max], dtype=torch.float32, device=self.device),
-            torch.tensor([coll.y_max], dtype=torch.float32, device=self.device),
+            torch.tensor([u_max], dtype=torch.get_default_dtype(), device=self.device),
+            torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=self.device),
+            torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=self.device),
             sample_ids=_aw_sid,
         )
 
@@ -1707,13 +1711,13 @@ class PI_GINOT_Trainer:
         mesh, coll_ref = self._val_bank[val_idx]
 
         # Fixed query cloud + domain bounds from the bank entry
-        query = torch.tensor(coll_ref.interior_pts, dtype=torch.float32,
+        query = torch.tensor(coll_ref.interior_pts, dtype=torch.get_default_dtype(),
                              device=self.device).unsqueeze(0)
-        x_m = torch.tensor([coll_ref.x_max], dtype=torch.float32,
+        x_m = torch.tensor([coll_ref.x_max], dtype=torch.get_default_dtype(),
                            device=self.device)
-        y_m = torch.tensor([coll_ref.y_max], dtype=torch.float32,
+        y_m = torch.tensor([coll_ref.y_max], dtype=torch.get_default_dtype(),
                            device=self.device)
-        u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.float32,
+        u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
                            device=self.device)
 
         fields = []
@@ -1722,7 +1726,7 @@ class PI_GINOT_Trainer:
             coll_trial = sample_collocation_points(mesh, rng=trial_rng)
 
             # Only boundary PC changes — query cloud stays fixed
-            bpc = torch.tensor(coll_trial.boundary_pc, dtype=torch.float32,
+            bpc = torch.tensor(coll_trial.boundary_pc, dtype=torch.get_default_dtype(),
                                device=self.device).unsqueeze(0)
 
             z = self.model.encode(bpc, x_m, y_m)
@@ -1761,17 +1765,17 @@ class PI_GINOT_Trainer:
         mesh, coll = self._val_bank[val_idx]
 
         bpc_np = coll.boundary_pc.copy()  # [N_bnd, 2]
-        query = torch.tensor(coll.interior_pts, dtype=torch.float32,
+        query = torch.tensor(coll.interior_pts, dtype=torch.get_default_dtype(),
                              device=self.device).unsqueeze(0)
-        x_m = torch.tensor([coll.x_max], dtype=torch.float32,
+        x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(),
                            device=self.device)
-        y_m = torch.tensor([coll.y_max], dtype=torch.float32,
+        y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(),
                            device=self.device)
-        u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.float32,
+        u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
                            device=self.device)
 
         # Reference: original ordering
-        bpc_ref = torch.tensor(bpc_np, dtype=torch.float32,
+        bpc_ref = torch.tensor(bpc_np, dtype=torch.get_default_dtype(),
                                device=self.device).unsqueeze(0)
         z_ref = self.model.encode(bpc_ref, x_m, y_m)
         uv_ref = self.model.decode(query, z_ref, u_d, x_m, y_m)
@@ -1782,7 +1786,7 @@ class PI_GINOT_Trainer:
         for k in range(n_trials):
             perm_rng = np.random.default_rng(2000 + k)
             perm = perm_rng.permutation(bpc_np.shape[0])
-            bpc_perm = torch.tensor(bpc_np[perm], dtype=torch.float32,
+            bpc_perm = torch.tensor(bpc_np[perm], dtype=torch.get_default_dtype(),
                                     device=self.device).unsqueeze(0)
             z_perm = self.model.encode(bpc_perm, x_m, y_m)
             uv_perm = self.model.decode(query, z_perm, u_d, x_m, y_m)
@@ -1840,11 +1844,11 @@ class PI_GINOT_Trainer:
         latents = []   # list of [1, n_tok, dim] tensors
         colls = []
         for i, (mesh, coll) in enumerate(self._val_bank):
-            bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
+            bpc = torch.tensor(coll.boundary_pc, dtype=torch.get_default_dtype(),
                                device=self.device).unsqueeze(0)
-            x_m = torch.tensor([coll.x_max], dtype=torch.float32,
+            x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(),
                                device=self.device)
-            y_m = torch.tensor([coll.y_max], dtype=torch.float32,
+            y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(),
                                device=self.device)
             sid = torch.tensor([100 + i], dtype=torch.long, device=self.device)
             z = self.model.encode(bpc, x_m, y_m, sample_ids=sid)
@@ -1881,13 +1885,13 @@ class PI_GINOT_Trainer:
             """Decode on geometry i's query cloud with latent z_j.
             Returns (delta_u, v, S11) as numpy arrays.
             """
-            query = torch.tensor(coll_i.interior_pts, dtype=torch.float32,
+            query = torch.tensor(coll_i.interior_pts, dtype=torch.get_default_dtype(),
                                  device=self.device).unsqueeze(0).requires_grad_(True)
-            u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.float32,
+            u_d = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
                                device=self.device)
-            x_m = torch.tensor([coll_i.x_max], dtype=torch.float32,
+            x_m = torch.tensor([coll_i.x_max], dtype=torch.get_default_dtype(),
                                device=self.device)
-            y_m = torch.tensor([coll_i.y_max], dtype=torch.float32,
+            y_m = torch.tensor([coll_i.y_max], dtype=torch.get_default_dtype(),
                                device=self.device)
 
             with torch.enable_grad():

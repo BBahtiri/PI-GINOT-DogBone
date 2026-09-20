@@ -147,7 +147,7 @@ class OracleConditioned(PI_GINOT):
         x = torch.tensor(
             [[(float(geo[k]) - self._ranges[k][0])
               / (self._ranges[k][1] - self._ranges[k][0])
-              for k in self.PARAM_KEYS]], dtype=torch.float32, device=dev)
+              for k in self.PARAM_KEYS]], dtype=torch.get_default_dtype(), device=dev)
         return self.param_mlp(x).view(1, self._n_lat, self._dim)
 
 
@@ -258,7 +258,7 @@ def main():
         opt, T_max=args.epochs, eta_min=args.lr * 0.02)
 
     def tens(a, req=False):
-        t = torch.tensor(a, dtype=torch.float32,
+        t = torch.tensor(a, dtype=torch.get_default_dtype(),
                          device=args.device).unsqueeze(0)
         return t.requires_grad_(req) if req else t
 
@@ -269,11 +269,11 @@ def main():
             tens(coll.boundary_pc),
             tens(sol.mesh.nodes),
             tens(sol.u),
-            torch.tensor([coll.x_max], dtype=torch.float32),
-            torch.tensor([coll.y_max], dtype=torch.float32),
+            torch.tensor([coll.x_max], dtype=torch.get_default_dtype()),
+            torch.tensor([coll.y_max], dtype=torch.get_default_dtype()),
         ))
 
-    u_delta = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.float32,
+    u_delta = torch.tensor([LOADING_CONFIG["u_max"]], dtype=torch.get_default_dtype(),
                            device=args.device)
     rng = np.random.default_rng(args.seed)
     t0 = time.time()

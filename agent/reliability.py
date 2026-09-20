@@ -254,7 +254,7 @@ def compute_section_force_cv(
         dy = w_k / n_y_pts
 
         pts = np.stack([np.full(n_y_pts, float(x_k)), y_vals], axis=-1)
-        query = torch.tensor(pts, dtype=torch.float32,
+        query = torch.tensor(pts, dtype=torch.get_default_dtype(),
                              device=device).unsqueeze(0).requires_grad_(True)
 
         with torch.enable_grad():
@@ -464,7 +464,7 @@ def run_full_reliability(
 
     # 1. Equilibrium residual on verification grid
     vg_pts = torch.tensor(
-        verification_grid.all_pts, dtype=torch.float32, device=device
+        verification_grid.all_pts, dtype=torch.get_default_dtype(), device=device
     ).unsqueeze(0).requires_grad_(True)
 
     with torch.enable_grad():
@@ -515,7 +515,7 @@ def run_full_reliability(
     )
     swap_pts = torch.tensor(
         verification_grid.all_pts[swap_idx],
-        dtype=torch.float32, device=device
+        dtype=torch.get_default_dtype(), device=device
     ).unsqueeze(0)
 
     with torch.no_grad():
@@ -527,7 +527,7 @@ def run_full_reliability(
 
     # 5. Baseline collapse detection — on FULL verification grid, NOT swap subset
     collapse_pts = torch.tensor(
-        verification_grid.all_pts, dtype=torch.float32, device=device
+        verification_grid.all_pts, dtype=torch.get_default_dtype(), device=device
     ).unsqueeze(0)
 
     with torch.no_grad():

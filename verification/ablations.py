@@ -217,6 +217,36 @@ ARMS = {
     "oracle-energy": (
         "energy", {}, {},
         "energy form, decoder conditioned on the exact geometry parameters"),
+    # --- Phase 6 Step 1: precision and per-component output scaling -------
+    # Both are cheap, and both arrived with a stated mechanism that the
+    # measurement had to check before the arm was worth running.
+    #
+    # float64.  The literature's large effect (Xu et al., arXiv 2505.10949,
+    # 34-117x) comes from L-BFGS runs whose default tolerance_change of 1e-7
+    # sits below float32 machine epsilon, so the inner loop stops on
+    # arithmetic.  This trainer is Adam and has no such rule, and evaluating
+    # a finished checkpoint in float64 moves every stress-concentration
+    # metric by less than 1e-3 relative -- so the forward path is not
+    # precision-limited either.  What is left is training dynamics, which is
+    # what this arm measures.
+    #
+    # Output scale.  The per-component scale is set from what the *heads*
+    # must produce, not from the fields: the ansatz already divides v by
+    # eta, leaving a 3.46x imbalance rather than the 20x the field norms
+    # suggest.  0.289 = 1/3.46 equalises the two heads on the bank mean.
+    "fp64": (
+        "energy", {"_precision": "float64"}, {},
+        "identical to energy-w0 in float64 — does precision change the "
+        "training dynamics, given it does not change the forward pass"),
+    "outscale": (
+        "energy", {"_decoder": {"output_scale": [1.0, 0.289]}}, {},
+        "per-component output scale, 1/3.46 on the transverse head, "
+        "measured from the reference rather than assumed from the fields"),
+    "fp64-outscale": (
+        "energy",
+        {"_precision": "float64",
+         "_decoder": {"output_scale": [1.0, 0.289]}}, {},
+        "both, in case either alone is masked by the other"),
     "measure-consistent": (
         "penalty", {}, {"boundary_measure_consistent": True},
         "boundary points allocated by arc length — the sampler otherwise "
@@ -239,7 +269,8 @@ def run_arm(name: str, args, val_indices):
             max_epochs=args.epochs,
             conditioning="oracle" if name.startswith("oracle-")
             else "pointcloud")
-        rows = evaluate(model, val_indices, args.device)
+        rows = evaluate(model, val_indices, args.device,
+                        ref_h_factor=args.h_factor)
     finally:
         # train_operator mutates the module-level collocation config; without
         # this every later arm inherits the previous arm's sampler.
@@ -291,6 +322,13 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--h-factor", type=float, default=1.3,
+                    help="reference element size = default_h * this. Phase "
+                         "6.1 measured the reference's own K_t error at "
+                         "0.85%% for 2.5 and 0.19%% for 1.3; everything "
+                         "before that phase was scored at 2.5, so older "
+                         "numbers are comparable to each other and not to "
+                         "these")
     ap.add_argument("--out", default="verification/results/ablations")
     args = ap.parse_args()
 

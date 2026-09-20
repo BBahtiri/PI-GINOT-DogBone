@@ -191,7 +191,7 @@ class EnergyLoss(nn.Module):
         w = np.repeat(mesh.areas[:, None] / k, k, axis=1)
         return pts.reshape(-1, 2), w.reshape(-1)
 
-    def quad_points(self, params: dict, device, dtype=torch.float32):
+    def quad_points(self, params: dict, device, dtype=torch.get_default_dtype()):
         """Quadrature points and weights for a geometry.
 
         The mesh is cached; the points are not, unless ``resample`` is off.

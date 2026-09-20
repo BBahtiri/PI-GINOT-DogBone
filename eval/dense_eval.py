@@ -251,12 +251,12 @@ def evaluate_dense(
     results = []
     try:
         for gi, g in enumerate(geoms):
-            x_m = torch.tensor([g.x_max], dtype=torch.float32, device=dev)
-            y_m = torch.tensor([g.y_max], dtype=torch.float32, device=dev)
-            u_d = torch.tensor([u_delta], dtype=torch.float32, device=dev)
+            x_m = torch.tensor([g.x_max], dtype=torch.get_default_dtype(), device=dev)
+            y_m = torch.tensor([g.y_max], dtype=torch.get_default_dtype(), device=dev)
+            u_d = torch.tensor([u_delta], dtype=torch.get_default_dtype(), device=dev)
             sid = torch.tensor([sample_id_offset + gi], dtype=torch.long,
                                device=dev)
-            bpc = torch.tensor(g.boundary_pc, dtype=torch.float32,
+            bpc = torch.tensor(g.boundary_pc, dtype=torch.get_default_dtype(),
                                device=dev).unsqueeze(0)
             with torch.no_grad():
                 z = model.encode(bpc, x_m, y_m, sample_ids=sid)
@@ -264,7 +264,7 @@ def evaluate_dense(
             # --- interior: ||Div P|| ---
             sq_sum, max_sq, n_int = 0.0, 0.0, 0
             for lo, hi in _chunks(len(g.interior), chunk):
-                pts = torch.tensor(g.interior[lo:hi], dtype=torch.float32,
+                pts = torch.tensor(g.interior[lo:hi], dtype=torch.get_default_dtype(),
                                    device=dev).unsqueeze(0).requires_grad_(True)
                 f_x, f_y, _ = equilibrium_residual(
                     model, pts, z, u_d, x_m, mu, lam, y_m, state,
@@ -287,9 +287,9 @@ def evaluate_dense(
                 nrm_np = g.boundary_normals[name]
                 sq, cnt = 0.0, 0
                 for lo, hi in _chunks(len(pts_np), chunk):
-                    pts = torch.tensor(pts_np[lo:hi], dtype=torch.float32,
+                    pts = torch.tensor(pts_np[lo:hi], dtype=torch.get_default_dtype(),
                                        device=dev).unsqueeze(0).requires_grad_(True)
-                    nrm = torch.tensor(nrm_np[lo:hi], dtype=torch.float32,
+                    nrm = torch.tensor(nrm_np[lo:hi], dtype=torch.get_default_dtype(),
                                        device=dev).unsqueeze(0)
                     P11, P12, P21, P22, _ = boundary_piola(
                         model, pts, z, u_d, x_m, mu, lam, y_m, state)

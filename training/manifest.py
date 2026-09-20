@@ -81,6 +81,10 @@ def environment() -> dict:
         "cuda_version": torch.version.cuda,
         "cudnn_version": (torch.backends.cudnn.version()
                           if torch.backends.cudnn.is_available() else None),
+        # Recorded because it is a run-level choice that changes results and
+        # is not visible anywhere in the config dicts: everything downstream
+        # builds its tensors at torch.get_default_dtype().
+        "default_dtype": str(torch.get_default_dtype()).replace("torch.", ""),
     }
     try:
         import scipy
@@ -151,6 +155,37 @@ def write_manifest(save_dir: str, config_module, extra: Optional[dict] = None,
     with open(os.path.join(save_dir, filename), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True, default=str)
     return manifest
+
+
+def set_precision(name: str) -> torch.dtype:
+    """Set the working precision for everything built after this call.
+
+    The training and evaluation paths construct their tensors at
+    ``torch.get_default_dtype()`` rather than naming a dtype, so this one call
+    moves the model parameters, the collocation points, the geometry inputs
+    and the physics arithmetic together.  Calling it after a model exists does
+    not convert that model, so it belongs at the top of a run.
+
+    What float64 can and cannot be expected to do here is worth stating,
+    because the literature's large effect sizes come from a mechanism this
+    project does not have.  Xu et al. (arXiv 2505.10949) report 34-117x from
+    the dtype alone, but those runs are L-BFGS, whose default
+    ``tolerance_change`` of 1e-7 sits *below* float32 machine epsilon, so the
+    inner loop stops on arithmetic rather than on convergence.  This trainer
+    is Adam and has no such stopping rule, so that mechanism is absent and
+    the effect here has to come from somewhere else -- the plane-stress
+    Newton closure, which converges to ~1e-7 instead of ~1e-16 in single
+    precision, or the gradient signal late in training falling below the
+    float32 noise floor.  Both are plausible and neither is established;
+    the flag exists so it can be measured rather than assumed.
+    """
+    dt = {"float32": torch.float32, "float64": torch.float64,
+          "fp32": torch.float32, "fp64": torch.float64}.get(str(name).lower())
+    if dt is None:
+        raise ValueError(f"unknown precision {name!r}; "
+                         "expected float32 or float64")
+    torch.set_default_dtype(dt)
+    return dt
 
 
 def set_deterministic(seed: int, warn_only: bool = True) -> None:

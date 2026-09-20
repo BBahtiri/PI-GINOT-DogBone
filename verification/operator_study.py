@@ -54,7 +54,8 @@ from geometry.banks import VAL_BANK_SEED, build_geometry_bank
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
 from physics.weak_form import EnergyLoss
-from training.manifest import set_deterministic, write_manifest
+from training.manifest import (set_deterministic, set_precision,
+                               write_manifest)
 from verification.fem.mesh import build_mesh, default_h
 from verification.fem.solver import solve as fem_solve
 
@@ -117,6 +118,12 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
     Note that ``colloc_overrides`` mutates the module-level config -- the
     caller is responsible for restoring it between arms.
     """
+    # Reserved override keys are popped before anything is built.  Precision
+    # has to come first of all: it changes torch's default dtype, and every
+    # tensor created after this point -- parameters included -- takes it.
+    overrides = dict(overrides) if overrides else {}
+    precision = overrides.pop("_precision", "float32")
+    set_precision(precision)
     set_deterministic(seed)
     cfg.COLLOCATION_CONFIG["n_interior"] = n_interior
     if colloc_overrides:
@@ -127,9 +134,9 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
     # reserved key, so an ablation arm can change the encoder without a
     # second plumbing path through every caller.
     enc = dict(ENCODER_CONFIG)
-    if overrides and "_encoder" in overrides:
-        overrides = dict(overrides)
-        enc.update(overrides.pop("_encoder"))
+    enc.update(overrides.pop("_encoder", {}))
+    dec = dict(DECODER_CONFIG)
+    dec.update(overrides.pop("_decoder", {}))
 
     c = dict(TRAINING_CONFIG)
     c.update(batch_size=batch, bank_train_size=bank, bank_val_size=2,
@@ -142,14 +149,18 @@ def train_operator(form: str, minutes: float, bank: int, batch: int,
 
     if conditioning == "oracle":
         from verification.supervised_ceiling import OracleConditioned
-        model = OracleConditioned(enc, DECODER_CONFIG,
+        model = OracleConditioned(enc, dec,
                                   TRAINING_CONFIG["bank_geo_ranges"]).to(device)
     else:
-        model = PI_GINOT(enc, DECODER_CONFIG,
+        model = PI_GINOT(enc, dec,
                          aux_head=c.get("w_geom_aux", 0.0) > 0.0).to(device)
-    if enc != ENCODER_CONFIG:
-        print("  encoder overrides: " + ", ".join(
-            f"{k}={v}" for k, v in enc.items() if ENCODER_CONFIG.get(k) != v))
+    for label, cur, base in (("encoder", enc, ENCODER_CONFIG),
+                             ("decoder", dec, DECODER_CONFIG)):
+        if cur != base:
+            print(f"  {label} overrides: " + ", ".join(
+                f"{k}={v}" for k, v in cur.items() if base.get(k) != v))
+    if precision != "float32":
+        print(f"  precision: {precision}")
     tr = PI_GINOT_Trainer(model=model, loss_fn=_build_loss(form, c),
                           config=c, device=device,
                           save_dir=os.path.join(out, tag or form))
@@ -278,6 +289,13 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--h-factor", type=float, default=1.3,
+                    help="reference element size = default_h * this. Phase "
+                         "6.1 measured the reference's own K_t error at "
+                         "0.85%% for 2.5 and 0.19%% for 1.3; everything "
+                         "before that phase was scored at 2.5, so older "
+                         "numbers are comparable to each other and not to "
+                         "these")
     ap.add_argument("--out", default="verification/results/operator")
     args = ap.parse_args()
 
@@ -313,7 +331,8 @@ def main():
         model, epochs, wall = train_operator(
             form, args.minutes, args.bank, args.batch, args.lr, args.device,
             args.seed, args.out, args.n_interior)
-        rows = evaluate(model, val_indices, args.device)
+        rows = evaluate(model, val_indices, args.device,
+                        ref_h_factor=args.h_factor)
         results[form] = {"epochs": epochs, "wall_s": wall, "rows": rows}
         with open(os.path.join(args.out, "result.json"), "w") as fh:
             json.dump(results, fh, indent=2, default=float)

@@ -86,18 +86,18 @@ def _pinn_fields(model, params, pts, u_delta, device, sample_id=700,
         mesh = generate_dogbone(params, rng=np.random.default_rng(0))
         coll = sample_collocation_points(mesh, n_interior=1,
                                          rng=np.random.default_rng(1))
-    bpc = torch.tensor(coll.boundary_pc, dtype=torch.float32,
+    bpc = torch.tensor(coll.boundary_pc, dtype=torch.get_default_dtype(),
                        device=device).unsqueeze(0)
-    x_m = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-    y_m = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
-    u_d = torch.tensor([u_delta], dtype=torch.float32, device=device)
+    x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+    y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
+    u_d = torch.tensor([u_delta], dtype=torch.get_default_dtype(), device=device)
     sid = torch.tensor([sample_id], dtype=torch.long, device=device)
 
     model.eval()
     with torch.no_grad():
         z = model.encode(bpc, x_m, y_m, sample_ids=sid)
 
-    q = torch.tensor(pts, dtype=torch.float32,
+    q = torch.tensor(pts, dtype=torch.get_default_dtype(),
                      device=device).unsqueeze(0).requires_grad_(True)
     uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
         q, z, u_d, x_m, y_m)
@@ -268,15 +268,15 @@ def _pinn_resultant(model, params, x, u_delta, device, sample_id, coll, fi,
     mesh = generate_dogbone(params, rng=np.random.default_rng(0))
     c = coll if coll is not None else sample_collocation_points(
         mesh, n_interior=1, rng=np.random.default_rng(1))
-    bpc = torch.tensor(c.boundary_pc, dtype=torch.float32,
+    bpc = torch.tensor(c.boundary_pc, dtype=torch.get_default_dtype(),
                        device=device).unsqueeze(0)
-    x_m = torch.tensor([c.x_max], dtype=torch.float32, device=device)
-    y_m = torch.tensor([c.y_max], dtype=torch.float32, device=device)
-    u_d = torch.tensor([u_delta], dtype=torch.float32, device=device)
+    x_m = torch.tensor([c.x_max], dtype=torch.get_default_dtype(), device=device)
+    y_m = torch.tensor([c.y_max], dtype=torch.get_default_dtype(), device=device)
+    u_d = torch.tensor([u_delta], dtype=torch.get_default_dtype(), device=device)
     sid = torch.tensor([sample_id], dtype=torch.long, device=device)
     with torch.no_grad():
         z = model.encode(bpc, x_m, y_m, sample_ids=sid)
-    q = torch.tensor(pts, dtype=torch.float32,
+    q = torch.tensor(pts, dtype=torch.get_default_dtype(),
                      device=device).unsqueeze(0).requires_grad_(True)
     _, a, b, cc, d = model.predict_with_grad_latent(q, z, u_d, x_m, y_m)
     P11 = first_piola_kirchhoff_stress(a, b, cc, d, MU, LAM, STATE)[0]
