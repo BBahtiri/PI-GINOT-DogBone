@@ -51,13 +51,13 @@ import copy
 import json
 import os
 
-import numpy as np
 import torch
 
 import config as cfg
 from config import COLLOCATION_CONFIG, TRAINING_CONFIG
 from training.manifest import write_manifest
-from verification.operator_study import evaluate, train_operator
+from verification.operator_study import (REPORT_METRICS, evaluate,
+                                         mean_metric, train_operator)
 
 # Arms whose name starts with "oracle-" swap the point-cloud encoder for an
 # MLP over the four exact geometry parameters (see
@@ -223,7 +223,6 @@ ARMS = {
         "varies density up to 17.5x between segments"),
 }
 
-METRICS = ("u", "v", "vm", "vm_fillet")
 
 
 def run_arm(name: str, args, val_indices):
@@ -252,32 +251,29 @@ def run_arm(name: str, args, val_indices):
 
 
 def report(results: dict):
-    print("\n" + "=" * 94)
-    print("Held-out geometries, mean over the set — ratio to baseline in "
-          "parentheses (<1 is better)")
-    print(f"{'arm':>20}{'epochs':>8}{'u':>11}{'v':>11}{'vm':>11}"
-          f"{'vm fillet':>12}{'|N err|':>10}")
-    print("-" * 94)
-
-    def mean(r, k):
-        return float(np.mean([x[k] for x in r["rows"]]))
-
-    def mean_N(r):
-        return float(np.mean([abs(x["N_err"]) for x in r["rows"]]))
+    hdr = (f"{'arm':>20}{'epochs':>8}"
+           + "".join(f"{k:>15}" for k in REPORT_METRICS) + f"{'|N err|':>9}")
+    print("\n" + "=" * len(hdr))
+    print("Held-out geometries, mean over the set — ratio to baseline on the "
+          "line below (<1 is better)")
+    print("vm_peak and scf are signed per geometry and averaged by magnitude "
+          "here; vm_fillet_Linf is the")
+    print("worst pointwise fillet error as a fraction of the reference peak.")
+    print(hdr)
+    print("-" * len(hdr))
 
     base = results.get("baseline")
     for name, r in results.items():
-        cells = "".join(f"{mean(r, k):>11.3e}" if k != "vm_fillet"
-                        else f"{mean(r, k):>12.3e}" for k in METRICS)
-        print(f"{name:>20}{r['epochs']:>8d}{cells}{100 * mean_N(r):>9.1f}%")
+        cells = "".join(f"{mean_metric(r['rows'], k):>15.3e}"
+                        for k in REPORT_METRICS)
+        print(f"{name:>20}{r['epochs']:>8d}{cells}"
+              f"{100 * mean_metric(r['rows'], 'N_err'):>8.1f}%")
         if base is not None and name != "baseline":
-            ratios = "".join(
-                f"{mean(r, k) / max(mean(base, k), 1e-30):>11.2f}"
-                if k != "vm_fillet" else
-                f"{mean(r, k) / max(mean(base, k), 1e-30):>12.2f}"
-                for k in METRICS)
+            rb = lambda k: (mean_metric(r["rows"], k)
+                            / max(mean_metric(base["rows"], k), 1e-30))
+            ratios = "".join(f"{rb(k):>15.2f}" for k in REPORT_METRICS)
             print(f"{'(vs baseline)':>20}{'':>8}{ratios}"
-                  f"{mean_N(r) / max(mean_N(base), 1e-30):>10.2f}")
+                  f"{rb('N_err'):>9.2f}")
 
 
 def main():

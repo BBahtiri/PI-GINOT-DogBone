@@ -180,13 +180,38 @@ def _reference(bank, gi, ref_h_factor):
     model, and sharing it removes any chance that the two formulations are
     scored against subtly different ground truths.
     """
-    if gi not in _REF_CACHE:
+    # Keyed on the mesh factor as well as the geometry.  Keying on the
+    # geometry alone would silently hand back the first mesh ever solved for
+    # it, so a second call asking for a finer reference would be scored
+    # against the coarse one and report no change -- the failure would look
+    # like a converged result.
+    key = (gi, round(float(ref_h_factor), 6))
+    if key not in _REF_CACHE:
         gmesh, _ = bank[gi]
         fi = get_fillet_geometry(gmesh.params)
         mesh = build_mesh(gmesh.params, h=default_h(fi) * ref_h_factor)
-        _REF_CACHE[gi] = fem_solve(mesh, LOADING_CONFIG["u_max"], MU, LAM,
-                                   STATE, n_steps=1, verbose=False)
-    return _REF_CACHE[gi]
+        _REF_CACHE[key] = fem_solve(mesh, LOADING_CONFIG["u_max"], MU, LAM,
+                                    STATE, n_steps=1, verbose=False)
+    return _REF_CACHE[key]
+
+
+# Metrics whose sign carries information: a peak 5% low and a peak 5% high
+# are different failures.  The per-geometry rows keep the sign, but averaging
+# signed errors across geometries lets one specimen's low peak cancel
+# another's high peak and report a model as better than any single prediction
+# it made, so the summary tables aggregate these by magnitude.
+SIGNED = ("vm_peak", "scf", "N_err")
+
+# Column order for the summary tables, shared with verification.ablations so
+# the two harnesses stay directly comparable.
+REPORT_METRICS = ("u", "v", "vm", "vm_fillet", "vm_peak",
+                  "vm_fillet_Linf", "scf")
+
+
+def mean_metric(rows, key):
+    """Mean over geometries, magnitude-averaged for the signed metrics."""
+    v = [x[key] for x in rows]
+    return float(np.mean(np.abs(v) if key in SIGNED else v))
 
 
 def evaluate(model, val_indices, device, ref_h_factor=2.5):
@@ -208,13 +233,36 @@ def evaluate(model, val_indices, device, ref_h_factor=2.5):
             "u": r["disp_u_rel_L2"], "v": r["disp_v_rel_L2"],
             "vm": r["vm_all"]["rel_L2"],
             "vm_fillet": r["vm_fillet"]["rel_L2"],
+            # The stress-concentration metrics.  A relative L2 is an average
+            # over the specimen, and the specimen is mostly prismatic gauge
+            # in which the state is nearly uniaxial and easy -- so a model
+            # can win the L2 while missing the one number a fillet study is
+            # about.  These three are the norms the claim is actually made
+            # in: the signed error in the peak von Mises, the worst
+            # pointwise error anywhere in the fillet as a fraction of the
+            # reference peak, and the signed error in the concentration
+            # factor itself.  Reported alongside the L2, not instead of it,
+            # because the pair is what distinguishes a model that has the
+            # level right and the peak wrong from one that has neither.
+            "vm_peak": r["vm_all"]["peak_rel_err"],
+            "vm_fillet_Linf": r["vm_fillet"]["max"],
+            "scf": r["scf_rel_err"],
+            "scf_ref": r["scf_ref"], "scf_pinn": r["scf_pinn"],
+            "x_peak_ref": r["x_peak_ref"], "x_peak_pinn": r["x_peak_pinn"],
+            "x_peak_err": r["x_peak_err"],
+            "vm_nominal_ref": r["vm_nominal_ref"],
+            "vm_nominal_pinn": r["vm_nominal_pinn"],
             "s22": r["s22_all"]["rms_over_scale"],
             "N_err": r["N_rel_err"],
         })
         print(f"    geo {gi:>2} (taper {rows[-1]['taper']:.2f}): "
               f"u={rows[-1]['u']:.3e} v={rows[-1]['v']:.3e} "
-              f"vm={rows[-1]['vm']:.3e} N={100 * rows[-1]['N_err']:+.1f}%",
-              flush=True)
+              f"vm={rows[-1]['vm']:.3e} "
+              f"peak={100 * rows[-1]['vm_peak']:+.1f}% "
+              f"SCF={rows[-1]['scf_pinn']:.3f}/{rows[-1]['scf_ref']:.3f} "
+              f"x*={rows[-1]['x_peak_pinn']:.3f}/"
+              f"{rows[-1]['x_peak_ref']:.3f} "
+              f"N={100 * rows[-1]['N_err']:+.1f}%", flush=True)
     return rows
 
 
@@ -270,26 +318,27 @@ def main():
         with open(os.path.join(args.out, "result.json"), "w") as fh:
             json.dump(results, fh, indent=2, default=float)
 
-    print("\n" + "=" * 82)
-    print("Held-out geometries, mean over the set")
-    print(f"{'form':>10}{'epochs':>9}{'s/epoch':>9}{'u':>11}{'v':>11}"
-          f"{'vm':>11}{'vm fillet':>12}{'|N err|':>10}")
-    print("-" * 83)
+    hdr = (f"{'form':>10}{'epochs':>8}{'s/ep':>7}" +
+           "".join(f"{k:>15}" for k in REPORT_METRICS) + f"{'|N err|':>9}")
+    print("\n" + "=" * len(hdr))
+    print("Held-out geometries, mean over the set "
+          "(vm_peak / scf averaged by magnitude)")
+    print(hdr)
+    print("-" * len(hdr))
     for form, r in results.items():
-        m = lambda k: np.mean([x[k] for x in r["rows"]])
-        print(f"{form:>10}{r['epochs']:>9d}"
-              f"{r['wall_s'] / max(r['epochs'], 1):>9.2f}"
-              f"{m('u'):>11.3e}{m('v'):>11.3e}{m('vm'):>11.3e}"
-              f"{m('vm_fillet'):>12.3e}"
-              f"{100 * np.mean([abs(x['N_err']) for x in r['rows']]):>9.1f}%")
+        cells = "".join(f"{mean_metric(r['rows'], k):>15.3e}"
+                        for k in REPORT_METRICS)
+        print(f"{form:>10}{r['epochs']:>8d}"
+              f"{r['wall_s'] / max(r['epochs'], 1):>7.2f}{cells}"
+              f"{100 * mean_metric(r['rows'], 'N_err'):>8.1f}%")
     if len(results) == 2:
         a, b = list(results)
-        print("-" * 83)
-        ma = lambda f, k: np.mean([x[k] for x in results[f]["rows"]])
-        print(f"{'ratio':>10}{'':>18}" + "".join(
-            f"{ma(a, k) / ma(b, k):>11.3f}" for k in ("u", "v", "vm")) +
-            f"{ma(a, 'vm_fillet') / ma(b, 'vm_fillet'):>12.3f}"
-            f"{np.mean([abs(x['N_err']) for x in results[a]['rows']]) / max(np.mean([abs(x['N_err']) for x in results[b]['rows']]), 1e-12):>10.3f}")
+        print("-" * len(hdr))
+        ra = lambda k: (mean_metric(results[a]["rows"], k)
+                        / max(mean_metric(results[b]["rows"], k), 1e-30))
+        print(f"{'ratio':>10}{'':>15}"
+              + "".join(f"{ra(k):>15.3f}" for k in REPORT_METRICS)
+              + f"{ra('N_err'):>9.3f}")
         print(f"           ({a} / {b}; below 1 means {a} is better)")
     print(f"\nWrote {os.path.join(args.out, 'result.json')}")
 

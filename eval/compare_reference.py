@@ -27,6 +27,15 @@ interest:
     fillet  x >= x_g                      the filleted part
     band    within 0.5 R of the arc       the concentration itself
 
+Relative L2 is not the quantity a stress-concentration claim rests on, and the
+two can disagree sharply -- R-PINN (arXiv 2506.10243) reports being 2x worse in
+L2 and 3.9x better in L-infinity than its comparator on the same problem, purely
+from the choice of error indicator.  So every region also carries `max` (the
+L-infinity error normalised by the reference peak), `peak_rel_err` (signed, so
+under- and over-prediction are distinguishable) and the percentiles, and the
+geometry carries a stress concentration factor.  Report the one the claim is
+about.
+
 Reading the numbers
 -------------------
 The reference is piecewise-constant stress on constant-strain triangles, so it
@@ -207,6 +216,33 @@ def compare_one(model, params: dict, u_delta: float, h: float,
             out[f"{name}_{rname}"] = _errors(pred, ref, mask, w,
                                              scale=vm_scale)
 
+    # Stress concentration factor -- the engineering statement of what this
+    # model is for, and the number a mechanics reader will look for first.
+    # Defined the standard way, peak over nominal, with the nominal taken as
+    # the mean von Mises over the prismatic gauge.  Both SCFs come from the
+    # same field, so the comparison is of the concentration itself rather than
+    # of the overall stress level, and a model that gets the level right and
+    # the peak wrong is caught here where a relative L2 would hide it.
+    gauge = reg["gauge"]
+    for tag, field in (("ref", vm_f), ("pinn", pin_c["vm"])):
+        nominal = float(np.average(field[gauge], weights=w[gauge])) \
+            if gauge.any() else float("nan")
+        out[f"scf_{tag}"] = float(field.max() / max(nominal, 1e-300))
+        out[f"vm_nominal_{tag}"] = nominal
+    out["scf_rel_err"] = float(
+        (out["scf_pinn"] - out["scf_ref"]) / max(abs(out["scf_ref"]), 1e-300))
+
+    # Where the peak sits, in units of the tangency abscissa, so 1.0 is the
+    # gauge-fillet transition itself and larger is further into the fillet.
+    # An amplitude error and a localisation error are different faults with
+    # different fixes -- a peak of the right height in the wrong place is a
+    # resolution problem, one in the right place at the wrong height is not
+    # -- and reporting only the magnitude would not tell them apart.
+    for tag, field in (("ref", vm_f), ("pinn", pin_c["vm"])):
+        out[f"x_peak_{tag}"] = float(
+            cent[int(np.argmax(field)), 0] / max(fi["x_g"], 1e-300))
+    out["x_peak_err"] = out["x_peak_pinn"] - out["x_peak_ref"]
+
     # global force balance
     xs = np.array([0.15, 0.35, 0.55, 0.75, 0.92]) * fi["L_half"]
     N_fem = np.array([sol.axial_resultant(x) for x in xs])
@@ -257,6 +293,72 @@ def _load_model(path, device):
     return model, ck
 
 
+def _convergence(args, factors=(2.5, 1.8, 1.3, 1.0, 0.75)):
+    """How much of the reference concentration factor is the mesh?
+
+    Every SCF the model is scored against is a maximum of a piecewise-constant
+    field over a finite mesh, so it is biased low and the bias shrinks with h.
+    That matters here in a way it would not for a relative L2: the quantity
+    being predicted varies only ~3% across the geometry bank, so a reference
+    that is itself 1% off -- and off by a *geometry-dependent* amount -- eats
+    a third of the signal and contaminates any R^2 computed against it.
+
+    Reports K_t against the finest mesh for a few geometries, so the factor
+    used for scoring can be chosen rather than inherited.
+    """
+    from config import get_fillet_geometry
+    from geometry.banks import VAL_BANK_SEED, build_geometry_bank
+    from verification.fem.mesh import default_h
+
+    bank = build_geometry_bank(TRAINING_CONFIG["bank_val_size"],
+                               TRAINING_CONFIG["bank_geo_ranges"],
+                               holes_on=False, seed=VAL_BANK_SEED)
+    geos = [int(g) for g in args.geometries.split(",")]
+    print("Reference discretisation error in the stress concentration factor")
+    print("=" * 74)
+    print(f"  K_t = peak von Mises / area-weighted gauge mean, "
+          f"{len(factors)} meshes per geometry")
+    print(f"  element size = default_h * factor; smaller factor, finer mesh\n")
+    hdr = (f"{'geo':>4}{'taper':>7}{'factor':>8}{'elems':>9}{'peak':>10}"
+           f"{'nominal':>10}{'K_t':>9}{'vs finest':>11}")
+    print(hdr)
+    print("-" * len(hdr))
+    out = {}
+    for gi in geos:
+        gmesh, _ = bank[gi]
+        p = gmesh.params
+        fi = get_fillet_geometry(p)
+        rows = []
+        for f in factors:
+            mesh = build_mesh(p, h=default_h(fi) * f)
+            sol = fem_solve(mesh, LOADING_CONFIG["u_max"], MU, LAM, STATE,
+                            n_steps=1, verbose=False)
+            vm, w, c = sol.von_mises(), mesh.areas, sol.centroids
+            g = c[:, 0] < fi["x_g"]
+            nom = float(np.average(vm[g], weights=w[g]))
+            rows.append({"factor": f, "n_elem": int(mesh.n_elem),
+                         "peak": float(vm.max()), "nominal": nom,
+                         "K_t": float(vm.max() / nom)})
+        fine = rows[-1]["K_t"]
+        for r in rows:
+            r["rel_to_finest"] = (r["K_t"] - fine) / fine
+            print(f"{gi:>4}{p['W_gauge'] / p['W_grip']:>7.2f}"
+                  f"{r['factor']:>8.2f}{r['n_elem']:>9d}{r['peak']:>10.4g}"
+                  f"{r['nominal']:>10.4g}{r['K_t']:>9.4f}"
+                  f"{100 * r['rel_to_finest']:>+10.2f}%")
+        print()
+        out[gi] = rows
+    worst = {f: max(abs(out[g][i]["rel_to_finest"]) for g in geos)
+             for i, f in enumerate(factors)}
+    print("worst |error| across the geometries, by factor:")
+    for f in factors:
+        print(f"  factor {f:>4.2f}: {100 * worst[f]:>5.2f}%")
+    path = os.path.join(args.out, "k_convergence.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({str(k): v for k, v in out.items()}, fh, indent=2)
+    print(f"\nWrote {path}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", default="checkpoints/best.pt")
@@ -266,11 +368,17 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     ap.add_argument("--convergence", action="store_true",
-                    help="also report the reference's own discretisation error")
+                    help="report the reference's own K_t discretisation "
+                         "error and exit, without loading a model")
+    ap.add_argument("--geometries", default="2,6,22",
+                    help="--convergence only: which bank geometries to "
+                         "refine (default spans the taper range)")
     ap.add_argument("--out", default="verification/results/compare")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    if args.convergence:
+        return _convergence(args)
     model, ck = _load_model(args.checkpoint, args.device)
     u_delta = LOADING_CONFIG["u_max"]
     from geometry.banks import VAL_BANK_SEED, build_geometry_bank
@@ -290,7 +398,8 @@ def main():
     from verification.fem.mesh import default_h
     hdr = (f"{'geo':>4}{'elems':>8}{'u L2':>9}{'v L2':>9}"
            f"{'vm all':>9}{'vm gauge':>10}{'vm fill':>9}{'vm band':>9}"
-           f"{'peak err':>10}{'N PINN':>9}{'N FEM':>9}{'N err':>9}{'N cv':>8}")
+           f"{'peak err':>10}{'K pinn':>9}{'K ref':>8}{'K err':>8}"
+           f"{'N err':>9}{'N cv':>8}")
     print(hdr)
     print("-" * len(hdr))
     for i, (gmesh, coll) in enumerate(bank):
@@ -304,7 +413,8 @@ def main():
               f"{r['vm_all']['rel_L2']:>9.2e}{r['vm_gauge']['rel_L2']:>10.2e}"
               f"{r['vm_fillet']['rel_L2']:>9.2e}{r['vm_band']['rel_L2']:>9.2e}"
               f"{r['vm_all']['peak_rel_err']:>10.2e}"
-              f"{r['N_pinn']:>9.1f}{r['N_fem']:>9.1f}"
+              f"{r['scf_pinn']:>9.3f}{r['scf_ref']:>8.3f}"
+              f"{100 * r['scf_rel_err']:>7.1f}%"
               f"{100 * r['N_rel_err']:>8.1f}%{100 * r['N_pinn_cv']:>7.1f}%",
               flush=True)
 
@@ -317,7 +427,8 @@ def main():
           f"{agg(lambda r: r['vm_fillet']['rel_L2']):>9.2e}"
           f"{agg(lambda r: r['vm_band']['rel_L2']):>9.2e}"
           f"{agg(lambda r: r['vm_all']['peak_rel_err']):>10.2e}"
-          f"{'':>18}{100 * agg(lambda r: abs(r['N_rel_err'])):>8.1f}%"
+          f"{'':>17}{100 * agg(lambda r: abs(r['scf_rel_err'])):>8.1f}%"
+          f"{100 * agg(lambda r: abs(r['N_rel_err'])):>8.1f}%"
           f"{100 * agg(lambda r: r['N_pinn_cv']):>7.1f}%")
     print(f"     FEM reference section-force CV (should be ~0): "
           f"{agg(lambda r: r['N_fem_cv']):.2e}")
