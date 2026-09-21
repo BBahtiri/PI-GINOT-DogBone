@@ -81,6 +81,17 @@ class _Budget:
 
 
 def _build_loss(form: str, c: dict):
+    if form == "mixed":
+        # Stress potentials: equilibrium and tractions exact by construction,
+        # the constitutive gap the only thing enforced.  See physics/mixed.py.
+        from physics.mixed import MixedLoss
+        return MixedLoss(
+            mu=MU, lam=LAM, stress_state=STATE,
+            n_elem_target=c["energy_n_elem"], resample=True,
+            w_barrier=c["w_barrier"], j_min=c["barrier_delta"],
+            E_scale=NONDIM_SCALES["S0"], S0=NONDIM_SCALES["S0"],
+            E=MATERIAL_CONFIG["E"],
+            w_energy=c.get("w_energy_mixed", 0.0))
     if form == "hybrid":
         # The energy functional with the equilibrium residual added back --
         # a combination that had never been run, because loss_form was

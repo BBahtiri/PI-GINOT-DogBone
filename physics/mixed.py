@@ -181,6 +181,7 @@ def mixed_fields(model, pts: torch.Tensor, geometry_latent, u_delta, x_max,
         mu, lam, stress_state, return_J3D=True)
 
     return {"uv": uv, "phi1": phi1, "phi2": phi2,
+            "grad_u": (gu[..., 0:1], gu[..., 1:2], gv[..., 0:1], gv[..., 1:2]),
             "P_phi": (P11p, P12p, P21p, P22p),
             "P_F": (P11, P12, P21, P22),
             "axial_force": s_F * one_h.reshape(-1),   # F_x = -c_1
@@ -250,3 +251,23 @@ class MixedLoss(EnergyLoss):
         out["Pi_log"] = out["L_energy_log"]
         out["L_trac_top_log"] = out["L_trac_arc_log"] = 0.0
         return out
+
+
+def cauchy_from_P(P, grad_u, J3D):
+    """In-plane Cauchy stress sigma = P F^T / J from a first Piola stress.
+
+    Plane stress, so P_i3 = 0 and the in-plane block needs only the in-plane
+    F.  Returns (s11, s22, s12, asym) where s12 is the symmetrised shear and
+    ``asym`` = s12 - s21 before symmetrising.  For P from the constitutive law
+    asym vanishes identically; for P from the potentials it measures the
+    angular-momentum balance the representation does not build in, and so is
+    reported rather than discarded.
+    """
+    P11, P12, P21, P22 = P
+    dudx, dudy, dvdx, dvdy = grad_u
+    F11, F12, F21, F22 = 1.0 + dudx, dudy, dvdx, 1.0 + dvdy
+    s11 = (P11 * F11 + P12 * F12) / J3D
+    s12a = (P11 * F21 + P12 * F22) / J3D
+    s21a = (P21 * F11 + P22 * F12) / J3D
+    s22 = (P21 * F21 + P22 * F22) / J3D
+    return s11, s22, 0.5 * (s12a + s21a), s12a - s21a
