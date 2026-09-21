@@ -256,3 +256,64 @@ before it is written anywhere a reviewer will read it.
 
 And this is the **representability** protocol — trained on the geometries it is
 scored on. The operator claim needs the generalising version.
+
+## Replication — three seeds per arm
+
+Seeds 0, 1, 2; within a seed the two arms share the model initialisation and
+the geometry sampling order. Same protocol and budget throughout.
+`verification/mixed_seeds_report.py` reproduces the table.
+
+| metric | energy s0 | s1 | s2 | m+e s0 | s1 | s2 | **energy** | **m+e** |
+|---|---|---|---|---|---|---|---|---|
+| **`K_t` R², from `u`** | 0.259 | 0.131 | 0.343 | 0.628 | 0.754 | 0.769 | **+0.24 ± 0.11** | **+0.72 ± 0.08** |
+| mean \|`K_t`\| error | 2.10% | 2.12% | 1.93% | 1.70% | 1.25% | 1.17% | 2.05 ± 0.10% | **1.37 ± 0.29%** |
+| `vm` rel L2 | 0.010 | 0.010 | 0.010 | 0.009 | 0.009 | 0.009 | 0.010 | 0.009 |
+| **`v` rel L2** | 0.023 | 0.023 | 0.024 | 0.042 | 0.050 | 0.043 | **0.023** | **0.045** |
+| \|Δx\*\| | 0.032 | 0.029 | 0.008 | 0.019 | 0.024 | 0.013 | 0.023 | 0.019 |
+| `K_t` R², from `φ` | — | — | — | 0.238 | 0.189 | 0.116 | — | +0.18 |
+
+### Verdict: the improvement replicates
+
+- **`K_t` R² rises from +0.24 ± 0.11 to +0.72 ± 0.08 on all three seeds**, and the
+  ranges do not overlap: the *worst* mixed + energy seed (0.63) is well above
+  the *best* energy seed (0.34). Welch's t with the seed as the unit: t = 6.21,
+  one-sided **p = 0.002**.
+- Mean `|K_t|` error falls **33%**, 2.05% → 1.37%, p = 0.021 at the seed level.
+- It closes **68%** of the gap between the energy form and the stress-supervised
+  ceiling (+0.94), with no reference data. Seed 0 alone had suggested 54%; it
+  was the least favourable of the three.
+
+A paired test at the finest grain — 24 (geometry, seed) pairs — gives 16 of 24
+better and Wilcoxon p = 0.025. That test treats the 8 geometries within one
+trained model as independent, which they are not, so it overstates the
+evidence; the seed-level test above is the one to quote.
+
+### The cost, stated as plainly as the gain
+
+**The transverse displacement roughly doubles its error**, 0.023 → 0.045 on all
+three seeds, p = 0.006. The stress-space pull the gap puts on `u` is paid for in
+`v`. The von Mises field and the peak location improve slightly; `v` gets
+worse. Any claim for this method has to carry both halves: it is a better
+predictor of the stress concentration and a worse predictor of lateral
+contraction.
+
+### The potentials as an output: replicated as not-better
+
+`φ`-derived `K_t` R² is +0.24, +0.19, +0.12 — mean **+0.18**, below the energy arm
+on average and below the displacement-derived stress of its own arm on every
+seed. The Phase 6.17 reading holds: the potentials are useful as a training
+scaffold, not as the output.
+
+### What this now supports, and what it does not
+
+**Supported:** on the representability protocol (oracle conditioning, trained
+on the scored geometries), adding an exactly-equilibrated stress-potential field
+to the energy objective raises the stress-concentration R² from +0.24 to +0.72
+across three seeds, at the cost of a roughly doubled transverse-displacement
+error.
+
+**Not yet supported:** anything about the operator. These models were scored on
+the geometries they trained on. The generalising run — trained on the bank,
+scored held-out — is what turns this into a claim about PI-GINOT, and it has
+not been run. Also untested: any `w_energy` other than 100, and whether an
+angular-momentum term makes `φ` a good output in its own right.
