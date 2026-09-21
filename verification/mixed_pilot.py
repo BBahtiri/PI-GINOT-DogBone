@@ -68,7 +68,12 @@ def train(form, entries, args):
     set_deterministic(args.seed)
     model = OracleConditioned(ENCODER_CONFIG, dict(DECODER_CONFIG, mixed=True),
                               TRAINING_CONFIG["bank_geo_ranges"])
-    loss_fn = _build_loss(form, dict(TRAINING_CONFIG))
+    # "mixed+energy" is the mixed loss with the energy added back, the
+    # conditioning fallback pre-registered before the pure-gap pilot ran.
+    c = dict(TRAINING_CONFIG)
+    if form.startswith("mixed+energy"):
+        c["w_energy_mixed"] = args.w_energy
+    loss_fn = _build_loss("mixed" if form.startswith("mixed") else form, c)
     params = model.trainable_parameters()
     opt = torch.optim.Adam(params, lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -188,6 +193,9 @@ def main():
     ap.add_argument("--val", default="2,15,4,6,3,11,9,22")
     ap.add_argument("--h-factor", type=float, default=1.3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--w-energy", type=float, default=100.0,
+                    help="energy weight for the mixed+energy arm; 100 makes "
+                         "the two terms comparable at initialisation")
     ap.add_argument("--out", default="verification/results/mixed_pilot")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -226,7 +234,7 @@ def main():
         print(f"{form:>10}{'u':>13}{m(rows, 'u'):>10.3e}{m(rows, 'v'):>10.3e}"
               f"{m(rows, 'vm'):>10.3e}{100 * m(rows, 'scf'):>8.2f}%"
               f"{r2(rows, 'scf_pinn'):>8.2f}{m(rows, 'x_peak_err'):>8.3f}")
-        if form == "mixed":
+        if form.startswith("mixed"):
             print(f"{'':>10}{'phi':>13}{'':>20}{m(rows, 'vm_phi'):>10.3e}"
                   f"{100 * m(rows, 'scf_phi'):>8.2f}%"
                   f"{r2(rows, 'scf_pinn_phi'):>8.2f}")

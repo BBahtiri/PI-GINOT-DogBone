@@ -114,7 +114,8 @@ from __future__ import annotations
 
 import torch
 
-from physics.neo_hookean import first_piola_kirchhoff_stress
+from physics.neo_hookean import (first_piola_kirchhoff_stress,
+                                 strain_energy_density)
 from physics.weak_form import EnergyLoss
 
 
@@ -241,8 +242,13 @@ class MixedLoss(EnergyLoss):
                "min_J3D_log": float(f["J3D"].detach().min()),
                "area": area}
         if float(self.w_energy) > 0.0:
-            Pi, _, _, _ = self.energy(model, params, geometry_latent,
-                                      u_delta, x_max, y_max)
+            # From the gradients the gap already computed, on the same
+            # quadrature points.  Calling self.energy() instead would cost a
+            # second forward pass and -- because the points are resampled on
+            # every call -- integrate the two terms over different samples.
+            Psi = strain_energy_density(*f["grad_u"], self.mu, self.lam,
+                                        self.stress_state)
+            Pi = (Psi[0, :, 0] * w).sum()
             L_energy = Pi / (self.E_scale * area)
             out["loss"] = out["loss"] + self.w_energy * L_energy
             out["L_energy_log"] = float(L_energy.detach())

@@ -162,3 +162,34 @@ amplitude depends on the `v` it cannot resolve.
 One seed per arm. The energy arm's +0.26 against the mixed arm's −0.68 is a
 large gap at 8 points, but the sampling variance of R² at n = 8 is itself
 large and unmeasured here.
+
+## Arm 3 — mixed + energy (the pre-registered conditioning fallback)
+
+`L = L_c + w_E · Π/(E|Ω|)`, `w_E = 100`, which makes the two terms comparable at
+initialisation. The energy is computed from the displacement gradients the gap
+already has, on the same quadrature points — so no second forward pass, and the
+two terms integrate over the same stratified sample rather than two different
+ones. Same protocol, budget and seed as the pilot.
+
+**Mechanism being tested.** The gap is flat in `v`, so near the solution its
+`v`-gradient is negligible and the transverse direction is governed by the
+energy term alone — for any `w_E > 0`. The energy gets `v` right on its own
+(2.25e-2). The gap then ties an exactly-equilibrated `φ` to `P(F(u))` and adds a
+stress-space pull the energy lacks.
+
+**Prediction, stated before the run.**
+
+- `v` recovers to energy quality: **≲ 5e-2**, against the pure mixed arm's 0.48.
+- `K_t` from `u`: **≥ +0.26**, the energy arm's value. It may sit right at it if
+  the energy dominates the displacement.
+- `K_t` from `φ` — the test that matters: **R²(φ) > +0.26**. `φ` is an exactly
+  equilibrated field fit to `P(F(u))`; projecting a stress field onto equilibrated
+  fields is a known stress-recovery improvement in finite elements, so if `u` is
+  now good, the projection should beat the raw constitutive stress.
+
+**Falsification.** If R²(φ) ≤ +0.26, the exactly-equilibrated potential field
+buys nothing over the energy form alone under this protocol, and the
+stress-potential representation is not the route to the ceiling here. Recorded
+as that if it happens.
+
+### Result
