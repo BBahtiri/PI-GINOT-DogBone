@@ -161,6 +161,21 @@ class PhysicsDecoder(nn.Module):
         nn.init.normal_(self.output_proj.weight, std=1e-5)
         nn.init.zeros_(self.output_proj.bias)
 
+        # Mixed u-P: two stress-potential channels and a per-geometry axial
+        # force correction, sharing the trunk with the displacement head so a
+        # single forward pass yields both fields.  Built only when asked, so
+        # every checkpoint written before this existed still loads and the
+        # displacement-only path is unchanged.  See physics/mixed.py.
+        self.mixed = bool(config.get("mixed", False))
+        if self.mixed:
+            self.stress_proj = nn.Linear(embed_dim, 2)
+            nn.init.normal_(self.stress_proj.weight, std=1e-5)
+            nn.init.zeros_(self.stress_proj.bias)
+            self.force_head = nn.Sequential(
+                nn.Linear(embed_dim, 64), nn.GELU(), nn.Linear(64, 1))
+            nn.init.zeros_(self.force_head[-1].weight)
+            nn.init.zeros_(self.force_head[-1].bias)
+
         # Direct pooled-latent bias injection
         # Adds a geometry-conditioned shift to queries before cross-attention,
         # strengthening the decoder's dependence on the geometry latent.
@@ -196,6 +211,25 @@ class PhysicsDecoder(nn.Module):
         """
         if y_max is None:
             y_max = x_max
+        q, _ = self.features(query_pts, geometry_latent, x_max, y_max)
+
+        # Raw network output (scaled to keep initial corrections small)
+        raw = self.output_scale * self.output_proj(q)  # [B, N_q, 2]
+
+        # Hard Dirichlet BC enforcement (physical coords)
+        uv = self._apply_hard_bc(raw, query_pts, u_delta, x_max, y_max)
+
+        return uv
+
+    def features(self, query_pts, geometry_latent, x_max, y_max):
+        """The shared trunk: per-query features and the pooled latent.
+
+        Split out of ``forward`` so the mixed formulation can read both the
+        displacement head and the stress-potential head off one pass.  The
+        displacement path through ``forward`` is unchanged.
+        """
+        if y_max is None:
+            y_max = x_max
 
         # Normalise physical coords to [-1, 1] for PE + attention
         query_norm = self._normalise_coords(query_pts, x_max, y_max)
@@ -215,13 +249,7 @@ class PhysicsDecoder(nn.Module):
             q = block(q, geometry_latent)             # [B, N_q, embed_dim]
             q = film(q, z_pool)                       # [B, N_q, embed_dim]
 
-        # Raw network output (scaled to keep initial corrections small)
-        raw = self.output_scale * self.output_proj(q)  # [B, N_q, 2]
-
-        # Hard Dirichlet BC enforcement (physical coords)
-        uv = self._apply_hard_bc(raw, query_pts, u_delta, x_max, y_max)
-
-        return uv
+        return q, z_pool
 
     def _normalise_coords(
         self,
