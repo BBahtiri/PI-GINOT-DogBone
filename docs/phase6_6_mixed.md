@@ -193,3 +193,66 @@ stress-potential representation is not the route to the ceiling here. Recorded
 as that if it happens.
 
 ### Result
+
+**Split. The falsification criterion fired on the test it was written for, and
+the arm improved the concentration factor anyway — through a different field
+than the one predicted.**
+
+| arm (oracle, overfit) | stress from | `u` | `v` | `vm` | \|`K_t`\| | **`K_t` R²** | \|Δx\*\| |
+|---|---|---|---|---|---|---|---|
+| energy | `u` | 1.04e-3 | **2.25e-2** | 9.72e-3 | 2.09% | +0.26 | 0.032 |
+| mixed | `u` | 5.76e-3 | 4.84e-1 | 4.38e-2 | 3.62% | −0.68 | 0.019 |
+| **mixed + energy** | **`u`** | **7.27e-4** | 4.15e-2 | **8.56e-3** | **1.70%** | **+0.63** | **0.019** |
+| mixed + energy | `φ` | — | — | 9.58e-3 | 2.49% | +0.24 | — |
+| predict the bank mean | — | — | — | — | 2.26% | 0.00 | — |
+
+Against the three predictions:
+
+| prediction | measured | |
+|---|---|---|
+| `v` ≲ 5e-2 | 4.15e-2 | **met** — 11.7× better than pure mixed |
+| `K_t` R² from `u` ≥ +0.26 | **+0.63** | **met, and far beyond** |
+| `K_t` R² from `φ` > +0.26 | +0.24 | **failed — falsification fires** |
+
+### What fired, stated plainly
+
+The hypothesis was that `φ` — an exactly-equilibrated field fit to `P(F(u))` —
+would be a *better stress estimate* than the constitutive stress it is fit to,
+the way equilibrated stress recovery improves finite-element stresses. It is
+not: +0.24 against the energy arm's +0.26. The potential field itself buys
+nothing as an output. Recorded as falsified.
+
+The likely reason is the one thing the representation does not build in.
+`P_φ Fᵀ` is not symmetric — angular momentum is left to the constitutive tie —
+and here its defect is **3.7–7.3% of `σ_nom`** on every geometry. Pushed forward
+to Cauchy, that asymmetry corrupts the shear. Flagged as a hypothesis, not
+measured as a cause.
+
+### What improved instead
+
+The *displacement's* stress. With the gap added to the energy, `P(F(u))` goes
+from R² +0.26 to **+0.63**, better on 6 of 8 geometries, with the largest gains
+exactly where the energy form was worst — geometry 9 from 4.84% to 2.64%,
+geometry 6 from 4.27% to 3.11%. The axial field improves too (`u` 1.4× better),
+and the peak location improves from 0.032 to 0.019 `x_g`.
+
+So the mechanism is not the one predicted. The gap term acts on `u` as a
+**stress-space regulariser**: it pulls `P(F(u))` toward something an exactly
+equilibrated, traction-free field can represent, which is a constraint the
+energy alone does not impose. **The potentials are more useful as a
+training-time scaffold than as the output** — a non-obvious finding, and a
+cleaner claim than the one predicted.
+
+For scale: this closes about **54%** of the gap between the energy form (+0.26)
+and the stress-supervised ceiling (+0.94), without any reference data.
+
+### How much to trust it
+
+**One seed.** The mean `|K_t|` error falls from 2.09% to 1.70%, −19%, against a
+seed CV of 11.6% measured for this metric in Phase 6.2 — about 1.6 of those.
+Suggestive, not established. R² at n = 8 is noisier still, dominated by the two
+worst geometries. The claim "+0.26 → +0.63" needs at least three seeds per arm
+before it is written anywhere a reviewer will read it.
+
+And this is the **representability** protocol — trained on the geometries it is
+scored on. The operator claim needs the generalising version.
