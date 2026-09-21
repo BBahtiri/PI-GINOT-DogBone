@@ -192,11 +192,23 @@ class EnergyLoss(nn.Module):
         w = np.repeat(mesh.areas[:, None] / k, k, axis=1)
         return pts.reshape(-1, 2), w.reshape(-1)
 
-    def quad_points(self, params: dict, device, dtype=torch.get_default_dtype()):
+    def quad_points(self, params: dict, device, dtype=None):
         """Quadrature points and weights for a geometry.
 
         The mesh is cached; the points are not, unless ``resample`` is off.
+
+        ``dtype`` resolves to torch's default *at call time*.  It used to be
+        ``dtype=torch.get_default_dtype()`` in the signature -- introduced in
+        Phase 6.2 by a mechanical substitution for the hard-coded float32 --
+        and a default argument is evaluated once, at import.  Every caller
+        imports this module before any run sets its precision, so the points
+        stayed float32 under float64, the model promoted them internally, and
+        autograd handed the displacement gradients back at the leaf's dtype:
+        float32.  The strain energy of the Phase 6.4 "fp64" arm was built
+        from float32-rounded gradients.
         """
+        if dtype is None:
+            dtype = torch.get_default_dtype()
         mesh = self._mesh(params)
         area = float(mesh.areas.sum())
         if self.resample:

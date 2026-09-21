@@ -220,6 +220,27 @@ is not worth running: the effect it would explain was noise.
 
 ### Verdict on float64: falsified, and the arm could not have been clean anyway
 
+> **Correction, recorded in Phase 6.12.** The arm was confounded a second
+> time, by a defect this phase introduced. The mechanical substitution of
+> `dtype=torch.float32` in 6.2 turned `EnergyLoss.quad_points` into
+> `def quad_points(..., dtype=torch.get_default_dtype())` — and a default
+> argument is evaluated once, at import. `train_operator` imports the loss
+> before it sets the run's precision, so under float64 the quadrature points
+> stayed float32. The model promoted them internally and ran, but autograd
+> returns a gradient at the dtype of its leaf, so **the displacement
+> gradients — and so the strain energy the arm was trained on — came back
+> float32.** Verified on the real code path: float64 parameters, float32
+> points, `du/dx` float32.
+>
+> So this arm tested neither clean float64 arithmetic nor clean float64
+> training. With the centroid-selection confound below, "falsified" is too
+> strong: the accurate statement is **not demonstrated, by an arm that could
+> not have demonstrated it**. What is unaffected is the evaluation result
+> above — re-scoring identical weights in float64 went through `rescore`, not
+> the quadrature, and moved every metric by under 2.5e-4 — so "the forward
+> path is not precision-limited" stands. Only the training-dynamics claim
+> falls. Fixed in 6.12: the dtype now resolves at call time.
+
 The plan's falsification criterion was *"if FP64 changes nothing beyond
 three-seed noise, then float32 was not a limit here and the literature's
 effect does not transfer — say so and move on."* It fires. Nothing improves
