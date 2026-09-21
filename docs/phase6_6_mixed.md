@@ -77,3 +77,88 @@ representation alone. That would be a real negative result and would be
 recorded as one.
 
 ## Results
+
+**Both predictions were wrong.** One seed, 1500 epochs, the protocol above.
+
+| arm (oracle, overfit) | stress from | `u` | `v` | `vm` | \|`K_t`\| | **`K_t` R²** | \|Δx\*\| |
+|---|---|---|---|---|---|---|---|
+| energy | `u` | **1.04e-3** | **2.25e-2** | **9.72e-3** | **2.09%** | **+0.26** | 0.032 |
+| mixed | `u` | 5.76e-3 | 4.84e-1 | 4.38e-2 | 3.62% | **−0.68** | **0.019** |
+| mixed | `φ` | — | — | 4.39e-2 | 4.31% | **−1.18** | — |
+| predict the bank mean | — | — | — | — | 2.26% | 0.00 | — |
+
+### The energy form clears the bar when nothing else is in the way
+
+Predicted R² ≤ 0; measured **+0.26**. The energy form, overfit on the eight
+scored geometries, beats a constant on the concentration factor.
+
+That reframes the ceiling table. Under the same protocol:
+
+| objective, oracle, overfit | what it matches | `K_t` R² |
+|---|---|---|
+| displacement supervision | values of `u` | −0.55 |
+| **total potential energy** | **∫ Ψ(∇u) — gradients, weighted by stiffness** | **+0.26** |
+| stress supervision | values of `σ_vm` | +0.94 / +0.98 |
+
+The ordering is coherent. `K_t` is a gradient quantity. Matching *values* of
+`u` cannot see it; the energy matches a functional of the *gradient*, so it
+sees it partly; matching the stress directly sees it fully. Phase 6.4's
+reading — "the objective must see stress" — was right in direction and too
+strong in degree: the energy already sees some. And the generalising energy
+arm's −0.25 is therefore partly generalisation and conditioning, not purely
+objective blindness. Both energy arms under-predict the peak (6 of 8 here,
+mean −1.97%), which is what a volume integral that smooths a small feature
+should do.
+
+### The mixed form fails, and my falsification criterion was too naive
+
+Measured R² −0.68 from `u`, −1.18 from `φ`, with the constitutive gap small —
+the exact condition I pre-registered as falsifying: *"R² ≤ 0 with the
+constitutive gap small."*
+
+But the criterion rested on an assumption the run refutes: that a small gap
+means a solution close to the true one. That holds only for a well-conditioned
+functional. Here:
+
+- the gap fell **1150×** (1.03e-1 → 8.98e-5), to 1.1–1.5% of `σ_nom` on every
+  geometry — the optimiser converged the functional;
+- and `v` is **33–64% wrong on every geometry**, 21.5× worse than the energy
+  arm.
+
+**A 1.3% constitutive gap coexists with a 48% transverse error.** The
+least-squares functional is flat in the transverse direction — the same
+near-null-space pathology Phase 3 measured in the energy (183× curvature
+ratio), and here evidently worse. The optimiser found a pair (`u`, `φ`) that
+is self-consistent to 1% and wrong, sitting in that valley.
+
+So the honest reading is not "stress-primary representations don't work". It
+is narrower and more useful: **the pure constitutive-gap functional is too
+weakly conditioned in `v` to be a standalone objective.** The representation's
+guarantees all held — equilibrium, tractions and section force are exact by
+construction and the run cannot have violated them — but a representation that
+cannot violate equilibrium can still be driven to the wrong equilibrated field
+by an objective that does not discriminate between fields.
+
+### What the mixed arm does better
+
+Peak **location**: 0.019 `x_g` against the energy arm's 0.032, 0.61×. The
+stress-primary field puts the concentration in the right place more reliably;
+it gets the amplitude wrong because the lateral stress state that sets the
+amplitude depends on the `v` it cannot resolve.
+
+## What this changes
+
+1. **The pre-registered result stands as recorded:** the pure mixed form did
+   not clear R² > 0 and did not beat the energy form. Not softened.
+2. **The criterion is corrected for the future:** a residual or gap being small
+   is not evidence of proximity to the solution unless the functional's
+   conditioning in every field is known. The energy form's own `v` problem
+   (Phase 3) was the warning, and it applied here too.
+3. **Next, and pre-registered as the conditioning fallback before this run:**
+   `w_energy > 0` — the energy governs `u` and its conditioning, the gap ties
+   an exactly-equilibrated `φ` to it. That is a new experiment with its own
+   prediction, stated below before it runs, not a rescue of this one.
+
+One seed per arm. The energy arm's +0.26 against the mixed arm's −0.68 is a
+large gap at 8 points, but the sampling variance of R² at n = 8 is itself
+large and unmeasured here.
