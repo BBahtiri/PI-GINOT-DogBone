@@ -93,7 +93,14 @@ def score_all():
     res = json.load(open(OUT)) if os.path.exists(OUT) else {}
     for (arm, s), path in MODELS.items():
         key = f"{arm}|{s}"
-        if key in res or not os.path.exists(path):
+        # The trainer rewrites last.pt after every chunk, so its existence
+        # says nothing about whether training finished -- the first version of
+        # this loop started scoring a half-trained energy seed 1 (stopped
+        # before it wrote anything).  The ablation harness writes result.json
+        # into the run's directory only after the arm completes, so that is
+        # the completion marker.
+        done = os.path.join(os.path.dirname(os.path.dirname(path)), "result.json")
+        if key in res or not os.path.exists(path) or not os.path.exists(done):
             continue
         print(f"scoring {key} ...", flush=True)
         m = load(arm, path)
