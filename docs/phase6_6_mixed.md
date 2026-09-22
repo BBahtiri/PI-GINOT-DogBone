@@ -317,3 +317,41 @@ the geometries they trained on. The generalising run — trained on the bank,
 scored held-out — is what turns this into a claim about PI-GINOT, and it has
 not been run. Also untested: any `w_energy` other than 100, and whether an
 angular-momentum term makes `φ` a good output in its own right.
+
+## Correction — adaptive sampling and the second-order optimiser are back
+
+Both were recorded as dropped. Both drops quoted a measurement outside the
+configuration it was made in, which is this project's standing failure mode,
+and neither holds for the mixed + energy objective that is now winning.
+
+**Adaptive sampling** was dropped in 6.11 because the hybrid's residual was
+satisfied *exactly* by the trivial uniform field, so putting more points where
+the residual is large could not help. That is true of the hybrid and false
+here: the stress-potential representation cannot be uniform (proven, verified
+at Level 0), so there is no trivial null. Mixed + energy is also precisely the
+"objective that already sees stress" that 6.8 said adaptive sampling would
+help. Both of its terms are integrated uniformly, so the peak region, about 1%
+of the area, carries about 1% of the objective. That is the under-weighting
+adaptive quadrature exists to fix, and Liu/Cai/Ramani's peak-stress recovery
+in an energy formulation is directly on point. Honest prior: modest — PACMANN
+finds most of RAD's advantage gone against resampled-uniform points, which is
+what this project uses. **Target: the 32% of the gap to the ceiling that
+mixed + energy has not closed.** Must stay resampled on every call (Phase 2),
+either importance-weighted to keep the objective unbiased or deliberately
+peak-weighted; they are different experiments.
+
+**The second-order optimiser** was bounded at 2.1× by the Phase 4
+physics-vs-supervision gap. That gap was measured on `v`, for the energy
+objective, at oracle conditioning. The new objective has a different and far
+worse conditioning problem: the pure constitutive gap reached 1.3% of
+`σ_nom` with `v` 48% wrong. And the gap is a least-squares functional, for
+which Gauss–Newton is the textbook method in a way it never was for the
+energy. **Target: the doubled `v` error, which may be a conditioning cost
+rather than a trade-off.** Practical constraints from the Phase 6 plan still
+apply: 573k parameters rules out a dense Gauss–Newton matrix (use matrix-free
+CG or K-FAC), and resampling corrupts curvature estimates, so fix the sample
+within a step and resample between steps. GPU work.
+
+**Order is unchanged at the top:** the held-out test first. Tuning a method
+before knowing whether it generalises would spend effort on something that
+might not survive the test.
