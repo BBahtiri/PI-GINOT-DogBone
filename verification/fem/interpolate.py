@@ -12,24 +12,46 @@ post-processing.
 
 from __future__ import annotations
 
+import weakref
+
 import numpy as np
 from scipy.spatial import Delaunay
 
 from verification.fem.mesh import FemMesh
 
+# Keyed by id(mesh), and every entry carries a weak reference to the mesh it
+# was built for.  The id alone is not an identity: CPython reuses the id of a
+# freed object for the next one allocated.  Before this fix, a caller that
+# loaded a reference solution, used it and let it go -- the scoring loops in
+# supervised_ceiling and mixed_pilot, which unpickle one solve per geometry --
+# could be handed the locator and element map of a *previous* mesh.  When the
+# stale mesh had more elements than the current one that raised IndexError,
+# which is how it was found; when it had fewer, it silently returned the wrong
+# elements.  The only quantity routed through here is the FEM section force
+# (axial_resultant), so only N_fem / N_rel_err could be corrupted -- K_t, the
+# stress fields and the displacements are all read at the reference's own
+# centroids and nodes.  Callers that kept every solution alive for the whole
+# process (verification.operator_study._REF_CACHE) never reused an id.
 _CACHE = {}
+
+
+def _entry(mesh: FemMesh):
+    """(Delaunay locator, Delaunay-simplex -> mesh-element map) for ``mesh``."""
+    key = id(mesh)
+    hit = _CACHE.get(key)
+    if hit is not None and hit[0]() is mesh:
+        return hit[1], hit[2]
+    tri = Delaunay(mesh.nodes)
+    lookup = {tuple(sorted(t)): e for e, t in enumerate(mesh.tris)}
+    mapping = np.array([lookup.get(tuple(sorted(t)), -1) for t in tri.simplices],
+                       dtype=np.int64)
+    _CACHE[key] = (weakref.ref(mesh), tri, mapping)
+    return tri, mapping
 
 
 def _locator(mesh: FemMesh) -> Delaunay:
     """A point-location structure over the mesh's own triangles."""
-    key = id(mesh)
-    hit = _CACHE.get(key)
-    if hit is None:
-        tri = Delaunay(mesh.nodes)
-        tri.simplices_override = mesh.tris
-        hit = tri
-        _CACHE[key] = hit
-    return hit
+    return _entry(mesh)[0]
 
 
 def barycentric(mesh: FemMesh, pts: np.ndarray):
@@ -38,22 +60,13 @@ def barycentric(mesh: FemMesh, pts: np.ndarray):
     Returns (elem_index, lambdas); elem_index is -1 where the point lies
     outside every element.
     """
-    tri = _locator(mesh)
+    tri, mapping = _entry(mesh)
     simp = tri.find_simplex(pts)
 
     # tri.simplices is Delaunay's own triangulation of the node set, which
     # includes elements outside the domain; map back to the mesh's elements.
     elem = np.full(len(pts), -1, dtype=np.int64)
     lam = np.zeros((len(pts), 3))
-
-    key = (id(mesh), "map")
-    mapping = _CACHE.get(key)
-    if mapping is None:
-        lookup = {tuple(sorted(t)): e for e, t in enumerate(mesh.tris)}
-        mapping = np.array(
-            [lookup.get(tuple(sorted(t)), -1) for t in tri.simplices],
-            dtype=np.int64)
-        _CACHE[key] = mapping
 
     ok = simp >= 0
     elem[ok] = mapping[simp[ok]]
