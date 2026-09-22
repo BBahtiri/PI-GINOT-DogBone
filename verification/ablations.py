@@ -214,6 +214,14 @@ ARMS = {
     "geomaux-np128": (
         "energy", {"w_geom_aux": 1e-3, "_encoder": {"n_point": 128}}, {},
         "128 FPS centroids AND the geometry auxiliary loss"),
+    # Mixed u-P by stress potentials added to the energy, in the trainer loop.
+    # The pilot-loop result (+0.72 representability, +0.85 in range held-out)
+    # was never run here, and the trainer loop's plain energy arm is the one
+    # that reaches +0.93 in range -- so this is the arm the re-test needs.
+    "oracle-mixed-energy": (
+        "mixed", {"_decoder": {"mixed": True}, "w_energy_mixed": 100.0}, {},
+        "energy + constitutive gap with exactly-equilibrated stress "
+        "potentials, decoder conditioned on the exact geometry parameters"),
     "oracle-energy": (
         "energy", {}, {},
         "energy form, decoder conditioned on the exact geometry parameters"),
