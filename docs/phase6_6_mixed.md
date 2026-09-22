@@ -355,3 +355,48 @@ within a step and resample between steps. GPU work.
 **Order is unchanged at the top:** the held-out test first. Tuning a method
 before knowing whether it generalises would spend effort on something that
 might not survive the test.
+
+## The held-out test — does the gain survive on geometries never trained on?
+
+Everything above was measured on the representability protocol: trained on the
+eight geometries it is scored on. The claim that matters for PI-GINOT is an
+operator claim — accuracy on geometries the network has never seen.
+
+**Protocol.** Identical to the replicated pilot — same training loop, cosine
+schedule, 1500 epochs, batch 4, learning rate, seed 0, oracle conditioning,
+mixed decoder built in both arms — with **one change: the training set is the
+64-geometry training bank** (different bank seed, so disjoint from the scored
+set). Scored on the same eight held-out geometries against the same
+references. Eight training geometries are scored too, so each arm's
+generalisation gap is measured inside the same run.
+
+Context, not the comparison: the historical oracle energy arm on this kind of
+protocol (trainer loop, 1600 epochs, near-constant learning rate) scored
+`K_t` R² **−0.25**. The comparison here is against a fresh, matched energy arm.
+
+**Prediction, stated before the run.**
+
+- **Energy, held-out:** `K_t` R² ≤ +0.1, most likely near the historical −0.25.
+  Representability gave +0.24; moving to unseen geometries should cost it.
+- **Mixed + energy, held-out:** R² **> 0**, and above the energy arm by
+  **≥ 0.2**. The reason to expect transfer: the gap term enforces physics that
+  holds on every geometry — a stress field that is equilibrated, traction-free
+  and consistent with the constitutive law — not detail about the training
+  geometries. A physics regulariser should generalise at least as well as the
+  energy it is added to.
+- **`v`:** the doubled transverse error persists.
+- **Generalisation gap:** both arms score better on training geometries than on
+  held-out ones.
+
+**Falsification.** If mixed + energy's held-out R² exceeds the energy arm's by
+less than 0.2, or is ≤ 0, the gain does not transfer at a detectable level.
+The sharpest version of that failure: a large advantage on the training
+geometries with little or none held-out — meaning the gap term helped the
+network *fit* stress on the geometries it saw, not *learn* it.
+
+**Resolution.** One seed. The seed-to-seed sd of `K_t` R² on the
+representability protocol was 0.08–0.11, so a difference below 0.2 is
+inconclusive, above 0.3 suggestive, and three seeds are needed before any of
+it is a claim.
+
+### Result

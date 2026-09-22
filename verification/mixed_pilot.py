@@ -51,7 +51,7 @@ import config as cfg
 from config import (DECODER_CONFIG, ENCODER_CONFIG, LOADING_CONFIG,
                     MATERIAL_CONFIG, TRAINING_CONFIG, get_fillet_geometry)
 from eval.compare_reference import compare_one
-from geometry.banks import VAL_BANK_SEED
+from geometry.banks import TRAIN_BANK_SEED, VAL_BANK_SEED
 from physics.mixed import cauchy_from_P, mixed_fields
 from physics.neo_hookean import von_mises_stress
 from training.manifest import set_deterministic, write_manifest
@@ -137,14 +137,21 @@ def phi_scores(model, gm, coll, sol):
     return out, fi
 
 
-def score(model, entries, val_idx, args):
+def score(model, entries, ids, args, split="val"):
+    """Score ``entries`` against their finite-element references.
+
+    ``split`` picks the reference cache tag and keeps the sample ids of the
+    two splits apart.
+    """
     rows = []
-    for (gm, coll), gi in zip(entries, val_idx):
-        sol = _solve_cached(gm.params, f"val_{VAL_BANK_SEED}_{gi}",
-                            args.h_factor)
+    for (gm, coll), gi in zip(entries, ids):
+        tag = (f"val_{VAL_BANK_SEED}_{gi}" if split == "val"
+               else f"train_{TRAIN_BANK_SEED}_{gi}")
+        sol = _solve_cached(gm.params, tag, args.h_factor)
         model.set_geometry(gm.params)
         r = compare_one(model, gm.params, UD, None, "cpu",
-                        sample_id=100 + gi, coll=coll, sol=sol)
+                        sample_id=(100 if split == "val" else 5000) + gi,
+                        coll=coll, sol=sol)
         row = {"geo": gi, "taper": gm.params["W_gauge"] / gm.params["W_grip"],
                "u": r["disp_u_rel_L2"], "v": r["disp_v_rel_L2"],
                "vm": r["vm_all"]["rel_L2"], "vm_fillet": r["vm_fillet"]["rel_L2"],
@@ -196,6 +203,17 @@ def main():
     ap.add_argument("--w-energy", type=float, default=100.0,
                     help="energy weight for the mixed+energy arm; 100 makes "
                          "the two terms comparable at initialisation")
+    ap.add_argument("--train-on", default="val", choices=("val", "train"),
+                    help="val: train on the geometries that are scored -- the "
+                         "representability protocol.  train: train on the "
+                         "training bank and score the held-out geometries -- "
+                         "the operator protocol")
+    ap.add_argument("--bank", type=int, default=64,
+                    help="training-bank size for --train-on train")
+    ap.add_argument("--score-train", type=int, default=8,
+                    help="with --train-on train, also score this many "
+                         "training geometries, so each arm's generalisation "
+                         "gap is measured inside the same run")
     ap.add_argument("--out", default="verification/results/mixed_pilot")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -206,17 +224,37 @@ def main():
                        bank_seed=VAL_BANK_SEED, pick=val_idx)
     for (gm, _), gi in zip(entries, val_idx):
         _solve_cached(gm.params, f"val_{VAL_BANK_SEED}_{gi}", args.h_factor)
+    if args.train_on == "train":
+        # The physics loss needs no reference, so the training bank needs no
+        # solves; only the geometries scored on the training side do.
+        train_entries = _entries(args.bank)
+        train_ids = list(range(min(args.score_train, len(train_entries))))
+        for i in train_ids:
+            _solve_cached(train_entries[i][0].params,
+                          f"train_{TRAIN_BANK_SEED}_{i}", args.h_factor)
+        what = (f"trained on the {args.bank}-geometry training bank, scored "
+                f"on {len(val_idx)} held-out geometries")
+    else:
+        train_entries, train_ids = entries, []
+        what = "trained on the geometries it is scored on"
 
-    print("Mixed pilot — physics-only, oracle-conditioned, trained on the "
-          "geometries it is scored on")
+    print(f"Mixed pilot — physics-only, oracle-conditioned, {what}")
     print("=" * 92)
     results = {}
     for form in [f.strip() for f in args.forms.split(",")]:
         print(f"\n  --- {form} ---", flush=True)
-        model, wall, hist = train(form, entries, args)
+        model, wall, hist = train(form, train_entries, args)
         print(f"    {args.epochs} epochs in {wall / 60:.1f} min")
-        rows = score(model, entries, val_idx, args)
-        results[form] = {"wall_s": wall, "rows": rows, "loss_hist": hist}
+        print("    held-out" if args.train_on == "train" else "    scored")
+        rows = score(model, entries, val_idx, args, split="val")
+        rows_train = []
+        if train_ids:
+            print("    training geometries")
+            rows_train = score(model, [train_entries[i] for i in train_ids],
+                               train_ids, args, split="train")
+        results[form] = {"wall_s": wall, "rows": rows,
+                         "rows_train": rows_train, "loss_hist": hist,
+                         "train_on": args.train_on}
         torch.save({"model_state_dict": model.state_dict()},
                    os.path.join(args.out, f"{form}.pt"))
         with open(os.path.join(args.out, "result.json"), "w") as fh:
@@ -244,8 +282,22 @@ def main():
                   f"sigma_nom, angular-momentum defect "
                   f"{max(x['asym_phi'] for x in rows):.2e} sigma_nom")
     print(f"{'constant':>10}{'':>43}{100 * const:>8.2f}%{0.0:>8.2f}")
-    print("\n  ceiling (Phase 6.4, supervised on stress, same protocol): "
-          "R2 +0.98 / +0.94 without the peak term")
+    if any(res["rows_train"] for res in results.values()):
+        print("\n  generalisation gap, K_t from u — training geometries vs held-out")
+        print(f"{'arm':>14}{'train R2':>10}{'held-out R2':>13}"
+              f"{'train |K_t|':>13}{'held-out |K_t|':>16}{'train v':>10}"
+              f"{'held-out v':>12}")
+        for form, res in results.items():
+            rt, rh = res["rows_train"], res["rows"]
+            print(f"{form:>14}{r2(rt, 'scf_pinn'):>10.2f}{r2(rh, 'scf_pinn'):>13.2f}"
+                  f"{100 * m(rt, 'scf'):>12.2f}%{100 * m(rh, 'scf'):>15.2f}%"
+                  f"{m(rt, 'v'):>10.3e}{m(rh, 'v'):>12.3e}")
+    if args.train_on == "val":
+        print("\n  ceiling (Phase 6.4, supervised on stress, same protocol): "
+              "R2 +0.98 / +0.94 without the peak term")
+    else:
+        print("\n  context: the Phase 6.4 ceiling (+0.94) was measured on the "
+              "representability protocol and does not bound this one")
 
 
 if __name__ == "__main__":
