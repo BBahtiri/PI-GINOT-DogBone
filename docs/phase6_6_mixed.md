@@ -400,3 +400,112 @@ inconclusive, above 0.3 suggestive, and three seeds are needed before any of
 it is a claim.
 
 ### Result
+
+**The pre-registered test failed as specified — and diagnosing why overturns the
+Phase 6.1 headline.**
+
+| arm, held-out (all 8) | `K_t` R² | \|`K_t`\| | `v` |
+|---|---|---|---|
+| energy | −9.41 | 6.62% | 3.92e-2 |
+| mixed + energy, from `u` | **−2.69** | 3.83% | 4.81e-2 |
+| mixed + energy, from `φ` | −0.00 | 2.87% | — |
+| predict the bank mean | 0.00 | 2.26% | — |
+
+Against the prediction: energy ≤ +0.1 — met. Mixed + energy above energy by
+≥ 0.2 — met numerically. **Mixed + energy R² > 0 — failed.** Recorded as failed.
+
+### Why: two of the eight "held-out" geometries are extrapolation
+
+The 64-geometry training bank spans taper **0.26–0.75**. Held-out geometries 9
+and 22 have taper **0.77 and 0.82** — outside it. The held-out set was chosen in
+Phase 5 to span the taper range, and nobody checked it against the range of the
+bank the models are trained on. The trainer draws the same bank
+(`TRAIN_BANK_SEED`), so this applies to every generalising result since.
+
+| `K_t` error by geometry | 2 | 15 | 4 | 6 | 3 | 11 | **9** | **22** |
+|---|---|---|---|---|---|---|---|---|
+| energy | −4.0% | −1.8% | +1.8% | −2.3% | −3.1% | −0.8% | **+16.8%** | **+22.5%** |
+| mixed + energy (`u`) | −2.1% | −0.8% | −1.2% | −1.0% | −0.8% | +1.7% | **+8.3%** | **+14.6%** |
+| mixed + energy (`φ`) | −3.5% | −2.9% | −2.6% | −4.8% | −2.3% | −2.4% | **−3.9%** | **−0.5%** |
+
+**This split is post hoc.** The criterion is objective (inside or outside the
+training bank's taper range) and would be drawn the same way a priori, but I
+drew it after seeing two geometries fail. The clean test is a pre-registered
+re-run with an in-range held-out set and a separate out-of-range set.
+
+### Interpolation — the six in-range held-out geometries
+
+| | `K_t` R² | \|`K_t`\| |
+|---|---|---|
+| energy (this loop) | +0.52 | 2.28% |
+| **mixed + energy, from `u`** | **+0.85** | **1.28%**, better on 5 of 6 |
+| mixed + energy, from `φ` | +0.16 | 3.09% |
+
+### Extrapolation — the two out-of-range geometries
+
+| | mean \|`K_t`\| |
+|---|---|
+| energy | 19.6% |
+| mixed + energy, from `u` | 11.5% |
+| **mixed + energy, from `φ`** | **2.2%** |
+
+The exactly-equilibrated field extrapolates dramatically better. It is the
+worse interpolator (it was on the representability protocol too) and by far the
+better extrapolator — what a structural constraint should buy: equilibrium and
+traction-free edges hold on *any* geometry, including ones the network never
+saw, so the field cannot drift as far.
+
+### The constitutive gap flags the failures, with no reference
+
+Across all 16 scored geometries, Spearman(gap, von Mises error) = **+0.74**
+(p = 0.001) and Spearman(gap, `|K_t|` error) = +0.56 (p = 0.024). On the two
+out-of-range geometries the gap is 0.065 and 0.093 `σ_nom`, against ~0.02 on
+every in-range one. The two stress fields disagree precisely where the
+prediction is wrong — a built-in, reference-free reliability signal.
+
+## Correction to Phase 6.1 — the headline was a property of the test set
+
+Re-splitting the stored Phase 6.1 arms (trainer loop, 1600 epochs, `h` 1.3):
+
+| arm | all 8 | **in-range 6** | out-of-range 2 |
+|---|---|---|---|
+| parameter-conditioned energy | R² −0.25 | **R² +0.93**, 0.88% | 6.4% |
+| point-cloud energy | R² −6.28 | R² −2.89, 6.25% | 8.8% |
+
+**"Neither arm beats a constant on the quantity the paper claims" was wrong for
+interpolation.** The shipped parameter-conditioned configuration predicts the
+stress concentration at R² **+0.93** on unseen geometries inside the training
+range — essentially at the supervised ceiling. The −0.25 that motivated
+Phases 6.4–6.6 was produced by two held-out geometries the model was never
+trained near. The point-cloud arm is genuinely weak even in range.
+
+What survives unchanged: every representability-protocol result (those models
+trained on geometries 9 and 22), the ceiling, the hybrid collapse, the pure-mixed
+failure, and the three-seed mixed + energy gain on the representability protocol
+— which holds in both subsets there (in-range 6: +0.58 → +0.76; geometries 9 and
+22: 3.18% → 1.33%).
+
+What changes: the motivation. The open problem is not that the physics-trained
+operator cannot see the stress concentration. It is **extrapolation** — every
+displacement-derived estimate overshoots by 6–22% beyond the training range —
+and the structurally equilibrated field is the one thing measured here that
+does not.
+
+### A confound this also exposes
+
+The trainer loop's energy arm reaches +0.93 in range; this pilot loop's energy
+arm reaches +0.52 on the same six geometries. The loops differ (cosine decay to
+2% vs a near-constant rate, and the trainer's own machinery), and the difference
+is large. Mixed + energy has only ever run in the pilot loop, where it beats
+the pilot loop's energy — but at +0.85 it does **not** beat the trainer loop's
+energy at +0.93. Whether it would beat it in the trainer loop is untested.
+
+## The process failure, named
+
+The held-out set was chosen to span taper 0.31–0.82 without checking it
+against the training bank's 0.26–0.75. A measured number — R² −0.25 — was read
+as a property of the model when it was substantially a property of the test
+set, and it set the direction of four subsequent phases. That is this project's
+recorded failure mode at its most expensive. The guard, from here on: **every
+held-out set is reported split into in-range and out-of-range, against the
+range of the bank the model was actually trained on.**
