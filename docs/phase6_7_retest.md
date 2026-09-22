@@ -65,3 +65,104 @@ Verdicts are computed by `python -m verification.retest --report` exactly as
 coded at this commit.
 
 ## Results
+
+Six models, three seeds per arm, scored on the 12 in-range and 8 out-of-range
+geometries. `python -m verification.retest --report` reproduces every number.
+
+| arm | IR `K_t` R² | IR \|`K_t`\| | OOR \|`K_t`\| | IR `v` |
+|---|---|---|---|---|
+| **energy** | **+0.61 ± 0.22** | **1.51 ± 0.49%** | 3.67 ± 3.06% | **0.018** |
+| mixed + energy, from `u` | −0.18 ± 0.87 | 2.97 ± 1.21% | 3.16 ± 1.35% | 0.036 |
+| mixed + energy, from `φ` | +0.25 ± 0.41 | 2.27 ± 0.69% | **1.15 ± 0.41%** | — |
+| predict the bank mean | 0.00 | 2.43% | — | — |
+
+Per seed: energy IR R² +0.85 / +0.41 / +0.57; mixed + energy +0.56 / −1.14 / +0.06.
+Energy OOR error 2.10 / 1.72 / 7.20%.
+
+## Verdicts
+
+| | claim | verdict |
+|---|---|---|
+| **P1** | energy has strong in-range skill | **HOLDS** — mean R² +0.61 (threshold +0.60), below the constant baseline on 3/3 seeds |
+| **P2** | mixed + energy adds nothing detectable in range | **as predicted** (p = 0.256) — but see below |
+| **P3** | `φ` extrapolates better | **FAILS** — not under half of energy's error on seed 1 (1.31% vs 1.72%) |
+| **P4** | the gap flags failure | **FAILS** — seed 1 gives ratio 1.55 and Spearman −0.33 |
+| **P5** | the extrapolation failure replicates | **FAILS** — ratios 2.2 / 0.9 / 4.4, needed > 3 on every seed |
+
+**Three of the four findings Phase 6.21 drew from a post-hoc split do not
+survive fresh geometries and three seeds.**
+
+### P1 — holds, and it is the one that matters
+
+The correction to Phase 6.1 is confirmed on geometries that had no part in
+suggesting it: the shipped parameter-conditioned energy configuration predicts
+the concentration factor with R² +0.61 ± 0.22 and 1.51% error against a
+constant's 2.43%, on every seed. It passes its threshold by 0.01, so it is a
+pass, not a comfortable one — the seed spread (+0.41 to +0.85) is wide relative
+to the effect.
+
+### P5 — the extrapolation cliff was two geometries, not a property
+
+On fresh wide-gauge specimens the energy arm's out-of-range error is 2.10%,
+1.72% and 7.20% — mean 3.67%, sd 3.06%, and on one seed *lower* than its
+in-range error. Phase 6.21's 6.4% (trainer loop) and 19.6% (pilot loop) came
+from two specific geometries, and both of those had every raw parameter inside
+the training box, so they are not a harder class of extrapolation — they are two
+hard specimens.
+
+### P4 — the gap is not a reliable indicator
+
+Seed 0 was convincing (ratio 2.82, Spearman +0.76); seed 1 reverses the
+correlation (−0.33). Pooled over all three seeds and 60 points the correlation
+is +0.38 at p = 0.0025, so *something* is there, but not the per-seed signal
+the claim needed.
+
+### P3 — the weaker version survives, the stated one does not
+
+As written — under half of the energy arm's error on every paired seed — it
+fails on seed 1. What does hold on every seed is that **`φ` beats the mixed
+model's own displacement-derived stress out of range**: 0.68 vs 4.30, 1.31 vs
+1.67, 1.45 vs 3.52. And on the means `φ` is 3.2× better than the energy arm out
+of range (1.15% vs 3.67%), though at n = 3 with these variances that is
+p = 0.14. A real effect at this sample size cannot be separated from a lucky
+one.
+
+### P2 — technically as predicted, and misleading
+
+The Welch test says no detectable difference (p = 0.256), but only because
+mixed + energy is wildly inconsistent: IR R² +0.56, −1.14, +0.06, sd 0.87
+against the energy arm's 0.22. Its mean is far below. The honest statement is
+**not** "no difference" but "in the trainer loop, mixed + energy is unstable,
+and nothing suggests it is better". Its in-range `v` is also 2× worse
+(0.036 vs 0.018, p = 0.10), consistent with the representability protocol.
+
+**So the three-seed representability gain (+0.24 → +0.72) does not transfer to
+the trainer loop on held-out geometries.** Both the loop and the protocol
+changed at once, so which one is responsible is untested.
+
+## What survives from Phase 6
+
+- The energy form's in-range skill on the concentration factor (P1), and with
+  it the correction to the Phase 6.1 headline.
+- The representability-protocol results, which were measured, replicated over
+  three seeds, and are not contradicted by this: they say what happens when a
+  model is trained on the geometries it is scored on.
+- The construction itself — equilibrium, traction-free edges and constant
+  section force exact to 1e-13 — which is verified independently of any
+  training outcome.
+
+## What does not
+
+- "Extrapolation is the open problem" — not on fresh geometries.
+- "The equilibrated field extrapolates better" — as a claim at three seeds, no;
+  as a within-model comparison, yes.
+- "The gap flags failures" — not per seed.
+- Any suggestion that mixed + energy improves the operator. On the protocol
+  that matters it does not, and it is unstable.
+
+## Lesson
+
+Phase 6.21's four claims came from one seed, one loop and a post-hoc split of
+eight geometries. Three did not survive. The cost of finding that out was about
+nine hours of compute; the cost of not finding out would have been a paper
+built on them.
