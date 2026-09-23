@@ -7,16 +7,23 @@ A family bundles everything that used to be hard-wired to the dog-bone:
 its parameters and their training box, the shape (for the FEM mesh and the
 energy quadrature), the exact Dirichlet specification for the network
 (geometry/adf.py), the Dirichlet sets for the FEM, the coordinate extent the
-decoder normalises by, and the regions that define its stress concentration
-factor
+decoder normalises by, and the definition of its stress concentration factor
 
-    K_t = max vm over the peak region / area-mean vm over the nominal region
+    K_t = max Cauchy vm over the peak region / (N / A_gross)
 
-(Cauchy von Mises both).  For the dog-bone the nominal region is the gauge;
-for the plates it is a far-field band x in [0.6 L, 0.85 L], where the section
-is prismatic and far from both the concentration and the grip.  The single
-notch excludes the grip end from the peak search: its clamped corners are
-weakly singular (Williams 1952; 64.4 deg threshold for this material).
+N is the axial force through the specimen -- the grip reaction for the FEM,
+the section integral of P11 at x = 0.75 L for the network, equal in
+equilibrium -- and A_gross the gross section per unit thickness.  At small
+load this is the handbook's gross-section K_t.
+
+Why not a far-field band mean, like the dog-bone's gauge mean: the first
+Level-3 run used one ([0.6 L, 0.85 L]) and clamping the grip moved it by
+~1% -- the band sits inside the clamped grip's end zone at L/W = 1.5, and
+the single notch is clamped by definition.  The force is the same through
+every section whatever the grip does.  The band mean is kept as
+``kt_band`` for comparison.  The single notch excludes the grip end from the
+peak search: its clamped corners are weakly singular (Williams 1952; 64.4
+deg threshold for this material).
 
 Parameters are dimensionless ratios plus the width W, so the training box is
 a box in the quantities that set K_t.  Every family is loaded, like the
@@ -74,11 +81,23 @@ class Family:
     def peak_mask(self, cent: np.ndarray, p: dict) -> np.ndarray:
         return np.ones(len(cent), bool)
 
-    def kt(self, vm: np.ndarray, cent: np.ndarray, areas: np.ndarray, p: dict):
-        nm, pm = self.nominal_mask(cent, p), self.peak_mask(cent, p)
-        nominal = float(np.average(vm[nm], weights=areas[nm]))
+    def gross_height(self, p: dict) -> float:
+        return self.extent(p)[1]
+
+    def section_x(self, p: dict) -> float:
+        return 0.75 * self.dims(p)["L"]
+
+    def kt(self, vm: np.ndarray, cent: np.ndarray, N: float, p: dict):
+        """(K_t, nominal stress, index of the peak element)."""
+        pm = self.peak_mask(cent, p)
+        nominal = float(N / self.gross_height(p))
         k = int(np.flatnonzero(pm)[np.argmax(vm[pm])])
         return float(vm[k] / nominal), nominal, k
+
+    def kt_band(self, vm, cent, areas, p):
+        nm, pm = self.nominal_mask(cent, p), self.peak_mask(cent, p)
+        nominal = float(np.average(vm[nm], weights=areas[nm]))
+        return float(vm[pm].max() / nominal)
 
     # --- sets ------------------------------------------------------------
     def _draw(self, rng, box):

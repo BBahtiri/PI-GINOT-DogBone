@@ -166,13 +166,26 @@ def _smooth(nodes, tris, fixed, shape, n_sweeps=12, relax=0.6):
 def build_shape_mesh(shape: Shape, h: float, refine: float = 6.0,
                      decay: float = 0.6, n_offset_layers: int = 3,
                      seed: int = 0, min_quality: float = 0.05,
-                     n_smooth: int = 12) -> TriMesh:
-    """Graded triangulation of any ``Shape``; same recipe as the dog-bone's."""
+                     n_smooth: int = 12, grade: float = None) -> TriMesh:
+    """Graded triangulation of any ``Shape``; same recipe as the dog-bone's.
+
+    Size field: ``h`` far away and ``h / refine`` on the feature.  With
+    ``grade`` the size grows linearly away from the feature,
+    h_loc = min(h, h / refine + grade * d), so the resolution *around* a
+    small feature scales with the feature.  Without it the dog-bone's
+    Gaussian blend over ``decay * feature_length`` is used; at a large
+    ``refine`` that blend is so abrupt that the field within one notch radius
+    of the root is under-resolved -- 6.6% low on a shallow semicircular notch
+    (Phase 8.2c, first Level-3 run).
+    """
     rng = np.random.default_rng(seed)
     lf = shape.feature_length
 
     def size(pts):
-        w = np.exp(-(shape.feature_distance(pts) / (decay * lf)) ** 2)
+        d = shape.feature_distance(pts)
+        if grade is not None:
+            return np.minimum(h, h / refine + grade * d)
+        w = np.exp(-(d / (decay * lf)) ** 2)
         return h / (1.0 + (refine - 1.0) * w)
 
     bnd = shape.boundary(size)
@@ -194,6 +207,8 @@ def build_shape_mesh(shape: Shape, h: float, refine: float = 6.0,
     delta = decay * lf
 
     def reach(h_t):
+        if grade is not None:
+            return np.inf if h_t >= h else max(0.0, (h_t - h / refine) / grade)
         w = (h / h_t - 1.0) / max(refine - 1.0, 1e-12)
         if w >= 1.0:
             return 0.0

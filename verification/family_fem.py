@@ -50,10 +50,19 @@ N_R = 60
 UD = LOADING_CONFIG["u_max"]
 
 
+GRADE = 0.2
+
+
 def mesh_for(fam, p, n_r=N_R, h_far=0.8, seed=0):
     sh = fam.shape(p)
     return build_shape_mesh(sh, h=h_far, refine=max(1.0, h_far * n_r / sh.feature_length),
-                            decay=0.6, seed=seed)
+                            grade=GRADE, seed=seed)
+
+
+def reaction(sol):
+    """Axial force per unit thickness through the model: the grip reaction."""
+    f, _, _, _ = assemble(sol.mesh, sol.u, MU, LAM, STATE, want_tangent=False)
+    return float(f[2 * sol.mesh.boundary["right_grip"]].sum())
 
 
 def solve_family(fam, p, u_delta, mesh=None, clamp_grip=False, n_r=N_R,
@@ -87,7 +96,7 @@ def cauchy(sol):
 
 
 def kt_of(fam, p, sol):
-    return fam.kt(sol.von_mises(), sol.centroids, sol.mesh.areas, p)[0]
+    return fam.kt(sol.von_mises(), sol.centroids, reaction(sol), p)[0]
 
 
 def reference(fam, p, tag):
@@ -127,9 +136,7 @@ def checks():
     p = {"W": 80.0, "dW": 0.05, "LW": 2.0}
     sol = solve_family(fam, p, 1e-3, n_r=40, h_far=1.6)
     s11, _, _ = cauchy(sol)
-    c = sol.centroids
-    far = fam.nominal_mask(c, p)
-    ratio = float(s11.max() / np.average(s11[far], weights=sol.mesh.areas[far]))
+    ratio = float(s11.max() / (reaction(sol) / fam.gross_height(p)))
     out["L3-F4"] = {"sxx_ratio": ratio, "ref": goodier, "rel": ratio / goodier - 1,
                     "n_elem": sol.mesh.n_elem}
     print(f"L3-F4: inclusion     d/W = 0.05        peak s_xx / far {ratio:.4f}  vs "
