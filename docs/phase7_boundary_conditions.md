@@ -419,6 +419,11 @@ python -m verification.bc_audit --report      # Phase A, from verification/resul
 python -m verification.grip_sensitivity       # Phase B1, ~12 s
 ```
 
+`verification/results/` is git-ignored, so the raw numbers behind every table
+below are archived in `docs/`: `phase7_bc_audit.json`,
+`phase7_grip_sensitivity.json`, and `phase6_7_retest_scores.json` (the `K_t`
+errors A3 and A5 compare against).
+
 ### Verdicts
 
 | | prediction | measured | verdict |
