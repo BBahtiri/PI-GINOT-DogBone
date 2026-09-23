@@ -77,9 +77,16 @@ def solve_family(fam, p, u_delta, mesh=None, clamp_grip=False, n_r=N_R,
         con = np.array(sorted(d), np.int64)
         full = np.array([d[c] for c in con])
         vals = (lambda frac, full=full: full * frac)
-    L = fam.dims(p)["L"]
-    u0 = np.zeros((mesh.n_node, 2))
-    u0[:, 0] = u_delta * mesh.nodes[:, 0] / L
+    # Initial guess: the transfinite lift of the family's Dirichlet data
+    # (geometry/adf.py), which satisfies every Dirichlet condition exactly.
+    # The affine field u_delta x / L does not on the rigid inclusion (u = 0 on
+    # the arc), and Newton's first step then starts from a jump the line
+    # search cannot repair (first --refs run, inclusion ir2).  For the other
+    # families the lift *is* the affine field.
+    import torch
+    spec = fam.spec(p, u_delta)
+    X = torch.tensor(mesh.nodes, dtype=torch.float64)
+    u0 = np.stack([spec.lift(X, 0).numpy(), spec.lift(X, 1).numpy()], -1)
     u, hist, it = newton(mesh, con, vals, u0, MU, LAM, STATE, n_steps=1,
                          verbose=False)
     _, _, P, J2D = assemble(mesh, u, MU, LAM, STATE, want_tangent=False)
