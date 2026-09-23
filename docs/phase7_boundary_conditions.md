@@ -38,11 +38,18 @@ The plan measures these cheaply, before any retraining.
 - **The Dirichlet side is exact.** The error is zero on every model and
   geometry.
 - **The free curved edge is not quite free.** The network leaves a small push
-  on it, about 3× more than the FEM does. At the peak this makes the predicted
-  stress read about 0.5–0.9% low, which is roughly a fifth of the `K_t` error.
+  on it, about 3× more than the FEM does.
+  - At the peak this makes the predicted stress read 0.4–0.9% low. That is
+    comparable in size to the `K_t` error itself (1.0–1.9%).
+  - But removing it would shrink that error by only 12–22%. This is a
+    first-order, exploratory estimate. The rest of the error does not point the
+    same way on every geometry.
 - **The grip model changes the true answer.** Switching the grip from
-  frictionless to clamped moves the reference `K_t` itself by 1–4%. That is more
-  than the network's error, because the grip face sits so close to the fillet.
+  frictionless to clamped moves the reference `K_t` itself:
+  - by 1.2–4.2% in range (mean 2.3%, above the network's mean error of 1.5%);
+  - by about 4.7% out of range.
+
+  The grip face sits close to the fillet.
 
 ---
 
@@ -441,8 +448,12 @@ failed in the same direction: the free edge matters more than I expected.
 ### A1 — the Dirichlet conditions are exact
 
 `u(0, y)`, `u(L_half, y) − u_δ` and `v(x, 0)` are **exactly zero** on every
-model and geometry, at the true end face and at the model's own `x_max`. H1 is
-rejected. Together with the audit (D1–D3), the Dirichlet side is correct,
+model and geometry. H1 is rejected.
+
+This holds in the float32 arithmetic the model runs in. There, the float64 end
+face rounds onto `x_max`, so the two grip checks are the same point. In float64
+the end face and `x_max` differ by at most 4.9e-8 relative, which would give an
+error of order 1e-8: still far below the 1e-6 threshold. Together with the audit (D1–D3), the Dirichlet side is correct,
 consistent with the FEM, and built the way the literature recommends.
 
 ### A2 — the free edge is not traction-free enough
@@ -454,7 +465,7 @@ In-range medians over 12 geometries, in units of `σ_n`:
 | arc, `|P·N|` RMS on the boundary | 2.48% | 2.22% | 2.33% |
 | arc, max | 12.7% | 5.5% | 7.3% |
 | at the boundary peak | 2.44% | 1.35% | 3.06% |
-| gauge top, RMS | 0.93% | 1.12% | 1.19% |
+| gauge top, RMS | 0.93% | 1.12% | 1.18% |
 | arc boundary elements, PINN | 2.54% | 2.28% | 2.43% |
 | arc boundary elements, **FEM** | 0.73% | 0.73% | 0.73% |
 | symmetry `x = 0` (`P₂₁`) / `y = 0` (`P₁₂`) / grip face (`P₂₁`) | 0.19 / 0.76 / 0.29% | 0.08 / 0.44 / 0.42% | 0.12 / 0.50 / 0.24% |
@@ -462,6 +473,10 @@ In-range medians over 12 geometries, in units of `σ_n`:
 - **Free edge.** The network leaves about 2.3% of the nominal stress acting on
   the free arc. Measured at the same boundary-element centroids, that is 3.3–3.5×
   what the converged FEM leaves there through its own `O(h)` discretisation.
+- **The ratio depends on the mesh; the absolute residual does not.** `ρ_arc`
+  and P-A2's verdict are specific to the `h_factor` 1.3 reference: a finer FEM
+  would shrink the denominator. The mesh-independent quantity is the network's
+  own residual on the boundary, about 2.3% of `σ_n`.
 - **Symmetry planes and grip face.** The natural conditions there are satisfied
   3–30× better than on the free edge, so C6 (symmetry-exact inputs) stays
   closed.
@@ -469,13 +484,17 @@ In-range medians over 12 geometries, in units of `σ_n`:
 ### A3 — at the peak, the violation pulls the prediction down
 
 - **The normal stress at the peak is tensile.** `σ_nn/σ_tt` is +1.85%, +0.68%
-  and +1.99% (median). The shear is small: `σ_nt/σ_tt` 0.1–0.6%.
+  and +1.99% (median).
+- **The shear is of similar size but barely matters.** Median `|σ_nt/σ_tt|` is
+  0.94%, 0.68% and 1.05%. It enters von Mises only at second order (`3q²/2 ≈
+  0.02%`), so it is the normal stress that moves the peak.
 - **That lowers von Mises.** A tensile normal stress on top of tensile `σ_tt` is
   biaxial tension, so `vm < |σ_tt|`. Mean `δ_BC` is −0.79%, −0.44% and −0.88%.
 - **The operator under-predicts `K_t` in range on every seed**: mean signed
   error −0.58%, −1.93% and −1.50%.
-- **The violation's direct effect has the same sign** and is about half the mean
-  bias.
+- **The violation's direct effect has the same sign as the bias.** Its size
+  relative to each seed's mean bias is 1.37, 0.23 and 0.58 (0.52 pooled). On
+  seed 0 it exceeds the whole bias.
 - Per geometry, the two do not track each other consistently: Spearman(`δ_BC`,
   `K_t err`) = +0.39, −0.37, −0.24.
 
@@ -505,11 +524,35 @@ for the concentration itself:
 |---|---|---|
 | `dx/H_grip` vs reference `K_t` | **−0.93** | < 0.001 |
 | \|`K_t` err\| vs reference `K_t` | +0.57 | 0.051 |
-| \|`K_t` err\| vs `dx/H_grip`, controlling for reference `K_t` (partial, ranks) | −0.32 | 0.31 |
+| \|`K_t` err\| vs `dx/H_grip`, controlling for reference `K_t` (partial, ranks) | −0.32 | 0.34 (df 9) |
+| \|`K_t` err\| vs reference `K_t`, controlling for `dx/H_grip` | −0.04 | 0.90 (df 9) |
 
 Geometries whose grip face sits close to the fillet also have the sharpest
-concentrations. "The grip is close" and "the peak is sharp" cannot be separated
-here. Controlling for the second leaves no significant effect of the first.
+concentrations. **Neither explanation survives controlling for the other**
+(both partials null), so with n = 12 and the two variables correlated at
+−0.93, this set cannot say which one drives the error.
+
+The per-geometry numbers the rule asks to report (seed means, three energy
+seeds):
+
+| `dx/H_grip` | reference `K_t` | mean signed err | mean \|err\| |
+|---|---|---|---|
+| 0.76 | 1.295 | −2.61% | 2.61% |
+| 0.89 | 1.244 | −2.62% | 2.62% |
+| 0.92 | 1.232 | −1.67% | 1.67% |
+| 0.96 | 1.196 | −1.86% | 1.86% |
+| 0.99 | 1.231 | −1.67% | 1.67% |
+| 1.05 | 1.204 | −2.63% | 2.63% |
+| 1.07 | 1.178 | −0.03% | 0.68% |
+| 1.11 | 1.199 | −0.27% | 0.68% |
+| 1.12 | 1.175 | +0.38% | 0.68% |
+| 1.19 | 1.177 | −0.63% | 0.63% |
+| 1.21 | 1.170 | −2.05% | 2.05% |
+| 1.21 | 1.171 | −0.38% | 0.38% |
+
+The six geometries with `dx/H_grip ≤ 1.05` are each under-predicted by
+1.7–2.6%. They include the five sharpest concentrations. Of the other six, five
+are within 0.7% and one is at 2.05%.
 
 ### B1 — the grip idealisation moves `K_t` more than the network's error
 
@@ -523,10 +566,15 @@ geometries, same meshes:
 | `‖Δv‖/‖v‖` | 0.60–0.74 | 0.51–0.60 |
 | global peak moves to the corner? | never | never |
 
-- **Direction and size.** Clamping always lowers `K_t`, and by more where the
-  grip face is closer to the fillet: −4.2% at `dx/H_grip` 0.76, −1.6% at 1.21.
-- **Against the operator's error.** The in-range mean shift (2.26%) is larger
-  than the operator's own mean `K_t` error (1.51%).
+- **Direction.** Clamping always lowers `K_t`.
+- **Size.** In range, the shift tracks the sharpness of the concentration
+  (Spearman +0.71 with reference `K_t`, p = 0.010) more than grip proximity
+  (−0.48 with `dx/H_grip`, p = 0.12). With the two correlated at −0.93, the A5
+  confound applies here too. A Saint-Venant reading (a closer grip gives a
+  larger shift) is physically plausible but not established by this set.
+- **Against the operator's error.** The in-range *mean* shift (2.26%) is larger
+  than the operator's own mean `K_t` error (1.51%). The smallest shift (1.19%)
+  is below it.
 - **`v`.** The transverse displacement is **mostly a property of the grip
   model**: 60–74% of it changes. That is not a PINN-vs-FEM error, because both
   solvers share the grip. It is a caveat on what the `v` numbers mean.
@@ -535,24 +583,31 @@ geometries, same meshes:
 
 Phase 6.21 is why these are labelled this way. None of them was predicted.
 
-- **E1 — the direct gain from a traction-free edge is bounded at about a
-  fifth.**
+- **E1 — the direct gain from a traction-free edge is estimated, to first order,
+  at 12–22%.**
   - Method: divide `δ_BC` out of the predicted peak. This first-order estimate
     is what `K_t` would read if the edge were traction-free and `σ_tt`
     unchanged.
   - Result: mean |`K_t` err| goes 0.97 → 0.80%, 1.93 → 1.70% and 1.64 → 1.28%.
     That is 12–22% lower, better on 6, 8 and 8 of 12 geometries.
-  - The rest of the error is in `σ_tt` itself, which is too low.
+  - This mixes locations: `δ_BC` from the boundary peak is applied to a `K_t`
+    taken over element centroids. It is an estimate, not a bound.
+  - After the correction, seeds 1 and 2 are still too low (−1.49%, −0.63%): the
+    remainder there is `σ_tt` itself. On seed 0 the correction overshoots to
+    +0.22%.
   - Any Phase C lever that only repairs the edge should be predicted at about
     this size. That is below what three seeds resolve here: seed-to-seed CV of
     mean |`K_t` err| is about 33% in the trainer loop.
 - **E2 — the free-edge residual separates in-range from out-of-range geometries
   on every seed, with no overlap.**
-  - Arc `|P·N|` RMS is 1.7–5.0% in range and 9.2–27.7% out of range. It needs no
-    reference, only the network's own stress on the known boundary.
+  - Arc `|P·N|` RMS is 1.7–5.0% in range and 9.2–27.7% out of range.
+  - It needs no reference. The run above normalised by the FEM's `σ_n`, so the
+    check was repeated with the network's own gauge-mean stress (a uniform grid,
+    no FEM). The ranges are identical to one decimal, still with no overlap on
+    any seed. The network's nominal agrees with `σ_n` to within −0.2..+0.6%.
   - But these out-of-range geometries leave the range in one direction only
     (taper). The flag also tracks "out of range", not large error: the
-    out-of-range `K_t` errors were +1.7%, +1.7% and +7.2%.
+    out-of-range `K_t` errors were +1.9%, +1.7% and +7.2%.
   - It is a candidate **reference-free out-of-range flag**. It needs a
     pre-registered test on geometries out of range in other parameters.
   - Phase 6.7 killed the constitutive-gap version of this claim in exactly that
@@ -560,6 +615,33 @@ Phase 6.21 is why these are labelled this way. None of them was predicted.
 - **E3 — the transverse field is grip-dominated** (B1, `‖Δv‖/‖v‖` 0.51–0.74).
   Phase 3–6's long effort on `v` was spent on a quantity whose physical meaning
   depends mostly on the grip idealisation.
+
+### Errata to §1 (found after the run by an independent check)
+
+§1 was written before the run and is left as committed. These corrections
+apply to it:
+
+- **N2, peak location.** On the 6.7 sets the reference peak spans `x*/x_g` =
+  1.03–1.12, not 1.03–1.11. The latter was the older eight-geometry range.
+- **N2, "never measured".** Phase 3 logged the *gauge-top* traction loss for
+  energy-form runs, as a loss value. No free-edge residual on the **arc** had
+  been measured.
+- **N3, scope.** The Phase 3 sweep also scored the section-force error, not only
+  `v` and L2.
+- **D2, `x_max` and `y_max`.** They are maxima over all of the geometry's nodes,
+  boundary and interior. The boundary endpoints attain them, so the values are
+  as stated.
+- **D5, normalisation.** The normal derivative of `1 − y/h(x)` on the arc is
+  `√(1 + h′²)/h(x)`. On the default geometry it stays at 0.83–1.0× of its
+  gauge-top value along the arc, because the `1/h` factor offsets the slope.
+  The "about 1.7" figure was the slope factor alone.
+- **G2, the clamped-corner singularity.**
+  - Williams' clamped–free eigen-equation crosses `λ = 1` at
+    `sin²α = (κ + 1)/4`.
+  - For this material (ν ≈ 0.23, plane stress, κ = 2.25) that is **64.4°**.
+  - So clamping would make only 2 of the 8 out-of-range corners (64.8°, 67.0°)
+    weakly singular, not all of them.
+  - Consistently, B1 never saw the peak move to the corner.
 
 ### What the gates now say
 
@@ -570,8 +652,11 @@ Phase 6.21 is why these are labelled this way. None of them was predicted.
   - It needs five seeds or a paired-seed design; three cannot resolve that.
   - A larger gain would mean the edge also drives `σ_tt`, which is the
     interesting outcome.
-- **R4 fired, so C4 is open by the rule, but not promoted.** The correlation
-  it rests on does not survive controlling for the concentration (A5).
+- **R4 fired, so C4 is open.** Its prediction must be written against both
+  readings of A5:
+  - if grip proximity drives the error, a physics-based lift should help most
+    where `dx/H_grip` is small;
+  - if the sharpness of the concentration drives it, the lift should not help.
 - **P-B1 held, so B2 is no longer optional** if the paper's `K_t` is to be the
   `K_t` of a standard specimen.
   - It changes the problem family: a new geometry, new references, and
@@ -592,12 +677,13 @@ with how the Dirichlet conditions are implemented:
    traction-free than the FEM does.
    - At the peak this reads the stress about 0.4–0.9% low, in the same direction
      as the operator's average under-prediction.
-   - It accounts directly for roughly a fifth of the `K_t` error.
+   - Removing it would shrink the `K_t` error by an estimated 12–22%. This is a
+     first-order, exploratory estimate.
 2. **The grip model.** Which Dirichlet condition is placed on the grip face is a
    modelling choice.
-   - Frictionless and clamped differ by 1.2–4.2% in `K_t`, more than the
-     network's error, because the grip face sits about one half-width from the
-     peak.
+   - Frictionless and clamped differ by 1.2–4.2% in `K_t` in range (mean 2.3%,
+     above the network's mean error of 1.5%) and by about 4.7% out of range.
+   - The grip face sits about one half-width from the peak.
    - The paper has to state this choice. To speak about standard specimens it
      needs a grip section (B2).
 
