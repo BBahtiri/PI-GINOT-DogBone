@@ -126,7 +126,7 @@ wall clock. Scores are in `docs/phase8_tier1_scores.json`, and
 | | prediction | result | verdict |
 |---|---|---|---|
 | **P-T1** | every new family beats the constant in range (≥ 2 of 3 seeds) | open hole 3/3, double notch 3/3, single notch 3/3, **rigid inclusion 1/3** | **FAILS** (holds for 3 of 4 families) |
-| **P-T2** | free-edge peaks under-predicted on every seed | open hole 3/3 · **double notch 0/3** (over-predicted every seed) · **single notch 1/3** (+0.2, +7.9, −7.9%) | **FAILS** (holds for the open hole only) |
+| **P-T2** | free-edge peaks under-predicted on every seed | open hole 3/3 · **double notch 0/3** (over-predicted every seed) · **single notch 1/3** (+0.2, +7.9, −7.8%) | **FAILS** (holds for the open hole only) |
 | **P-T3** | sharper double notches have larger errors | Spearman −0.10, p = 0.56, n = 36 | **FAILS** |
 | **P-T4** | the family loop is equivalent to the trainer loop | dog-bone seed 0: R² +0.83, \|err\| 0.96%; the 6.7 trainer loop's seed 0 gave +0.85, 0.97% | **HOLDS** |
 
@@ -143,6 +143,9 @@ were wrong.
 | double notch | +0.85 ± 0.10 | 4.09 ± 0.54% | 12.28% | +1.55 ± 1.08% | 17.26 ± 2.05% | 8.1e-3 | 1.0e-1 | 3.1e-2 |
 | single notch, clamped | +0.67 ± 0.30 | 6.79 ± 2.53% | 15.86% | +0.11 ± 7.89% | 14.77 ± 7.87% | 7.2e-3 | 5.7e-2 | 2.1e-2 |
 
+The L2 columns are the mean over seeds of the per-seed median over the 12
+in-range geometries.
+
 In-range reference `K_t`:
 - dog-bone 1.17–1.30 (gauge definition);
 - open hole 3.12–4.01;
@@ -152,71 +155,139 @@ In-range reference `K_t`:
 
 ### What the numbers say
 
-1. **The method carries over to new geometry families, in range.**
-   - Four of the five families beat the predict-the-mean baseline on every
-     seed, the dog-bone included.
-   - Errors are 1.5–7%, against baselines of 2.4–15.9%.
-   - The loop check (P-T4) shows the rows are comparable: the same loop gives
-     the dog-bone the same result as before.
-2. **The rigid inclusion is accurate but shows no skill.**
-   - Its reference `K_t` hardly varies over the range (1.41–1.50), so the
-     baseline error is only 1.6%.
-   - The operator's 1.75% error is a consistent under-prediction (−1.1, −2.0,
-     −1.9%) rather than scatter.
-   - In absolute terms it is as accurate as the dog-bone, and it holds up out
-     of range (1.8%). That is the only new family where it does.
-   - This is the first family with its peak on a curved Dirichlet boundary
-     imposed by the distance-function layer. That layer works; the missing
-     skill is about signal size, not boundary conditions.
-3. **Error grows with the concentration, across families but not within one.**
-   - In-range error rises roughly with the family's mean reference `K_t`: 1.5%
-     (dog-bone, 1.21), 1.8% (inclusion, 1.46), 3.4% (hole, 3.44), 4.1% (double
-     notch, 3.71), 6.8% (single notch, 4.47).
-   - Within the double notch, sharper roots are not worse (P-T3 fails).
-4. **The sign of the error is family- and seed-dependent.**
-   - The dog-bone, the hole and the inclusion are under-predicted on every seed.
-   - The double notch is over-predicted on every seed.
-   - The single notch's bias swings from +7.9% to −7.9% between seeds.
-   - A seed-level offset of the whole peak dominates the per-geometry scatter.
-     This is the same seed sensitivity Phase 6 measured, larger on sharper
-     families.
-5. **Extrapolation fails on the hole and notch families.**
-   - Out-of-range errors are 12–17% (open hole: too low on every seed).
-   - The dog-bone re-test found no such cliff (3.7%), and the inclusion has
-     none (1.8%).
-   - Each family's out-of-range direction pushes `K_t` beyond anything in its
-     training set, and the operator does not follow the steep rise.
-   - Phase 6.7's "no extrapolation cliff" was a dog-bone result, not a general
-     one.
-6. **The free edge is much less traction-free at holes and notches**
-   (`docs/phase8_tier1_residuals.json`, descriptive).
+*Corrected after an independent check (commit 8.14). The first version
+overstated points 2, 4, 5 and 6; what changed is listed at the end.*
 
-   | family | RMS \|P·N\|/σ_nom on the feature | at the peak, vm/\|σ_tt\| − 1 |
+1. **In range, three of the four new families have skill on `K_t`.**
+   - The open hole, double notch and single notch beat the predict-the-mean
+     baseline on every seed, and so did the dog-bone in 6.7.
+   - Errors are 3.4–6.8%, against baselines of 5.9–15.9%.
+   - Relative to each baseline, the sharper families are *not* worse:
+     |err| / constant is 0.62 (dog-bone), 0.57 (hole), 0.33 (double notch) and
+     0.43 (single notch).
+2. **The rigid inclusion has no skill, and its field is wrong at the interface.**
+   - Its reference `K_t` hardly varies (1.41–1.50, baseline 1.6%), and the
+     operator's 1.75% error is a steady under-prediction.
+   - The peak locations show more:
+     - the FEM peak is on the interface at θ = 28–33°;
+     - the network's maximum sits on the loading axis (θ < 5°) in 30 of 36
+       in-range rows, and off the interface (r/a up to 1.30) in 25 of 36.
+   - At the FEM's peak element, the network's von Mises is 6.0 / 8.4 / 6.0% low
+     per seed, and down to −14% on one geometry.
+   - So the small `K_t` error partly comes from a maximum in the wrong place,
+     landing on a flat plateau. The stress near the bonded interface is off by
+     6–8% at the true peak.
+   - The distance-function layer imposes the displacement exactly (Level 0),
+     but this is the family where the field next to a curved Dirichlet boundary
+     is worst. That makes ablation A-ADF (R-equivalence vs plain product, and
+     the corner behaviour of §3 of the plan) a live question, not an
+     academic one.
+3. **Across families the absolute error rises with the `K_t` level, within a
+   family it does not.**
+   - By mean reference `K_t`: 1.5% (dog-bone, 1.21), 1.8% (inclusion, 1.46),
+     3.4% (hole, 3.44), 4.1% (double notch, 3.71), 6.8% (single notch, 4.47).
+   - This ranking is post hoc, over five points that also differ in `K_t`
+     definition (the dog-bone's), boundary conditions and model type.
+   - The pre-registered within-family test failed (P-T3), and so does
+     Spearman(|err|, ρ/t) (+0.02, p 0.91).
+4. **The sign of the error depends on the family; a seed offset dominates only
+   for the single notch.**
+   - Under-predicted on every seed: the dog-bone (6.7), the hole, the inclusion.
+   - Over-predicted on every seed: the double notch.
+   - The single notch's bias swings from +7.9% to −7.8% between seeds. There,
+     between-seed variance is 54% of the signed-error variance.
+   - Elsewhere per-geometry error dominates. The between-seed share is 0.03
+     (double notch), 0.12 (inclusion), 0.17 (hole) and 0.19 (dog-bone). On the
+     double notch the per-geometry errors correlate across seeds at
+     r = 0.48–0.59: the same geometries are hard for every seed.
+5. **Out of range, it depends on where the direction takes `K_t`.**
+   - **Hole:** out-of-range `K_t` 4.54–4.89, above the in-range maximum of
+     4.01. The error is 12.3%, too low on every seed: the operator does not
+     follow the rise.
+   - **Double notch:** out-of-range `K_t` 5.37–6.62, above 4.84. The 17% is
+     mostly *spurious peaks*.
+     - On 2–3 of 8 geometries per seed, the network's maximum sits on the
+       notch flank, where the FEM stress is low. Those rows are +38 to +54%.
+     - Where the peaks coincide, the error is 7–8%.
+   - **Single notch:** 5 of 8 out-of-range `K_t` values fall inside the
+     in-range span, yet those still average about 11% error. Extrapolating in
+     `t/W` fails even when `K_t` itself does not leave its range.
+   - **Inclusion:** out-of-range `K_t` 1.36–1.38, *below* the in-range span.
+     Error 1.8%.
+   - **The dog-bone re-test (6.7):** out-of-range `K_t` inside the in-range
+     span, error 3.7%.
+   - So the two families without a cliff are the two whose out-of-range `K_t`
+     stays inside or below the trained span. This design cannot say whether
+     extrapolation fails generally, or only when `K_t` leaves its trained span.
+6. **The free edge is less traction-free at holes and notches, but that does
+   not explain the `K_t` errors** (`docs/phase8_tier1_residuals.json`,
+   descriptive).
+
+   | family | RMS \|P·N\|/σ_nom on the feature | at the peak, vm/\|σ_tt\| − 1 (seed means) |
    |---|---|---|
-   | dog-bone (Phase 7, arc) | ~2.3% | −0.4 to −0.9% |
+   | dog-bone (Phase 7; ≈ 4.7–5.4% in these units) | 2.2–2.5% of the gauge-mean vm | −0.4 to −0.9% |
    | open hole | 7.4–18.4% | −0.2 to −1.0% |
-   | double notch | 21.0–26.7% | +0.3 to −4.5% |
-   | single notch | 21.7–32.8% | −0.5 to −3.4% |
+   | double notch (flank + root) | 21.0–26.7% | +0.3 to −4.5% |
+   | single notch (flank + root) | 21.7–32.8% | −0.5 to −3.4% |
 
-   - Phase 7's weakness of the energy form grows by an order of magnitude on
-     sharp features.
-   - At the peak point itself it moves von Mises by up to 4.5%, of the same
-     order as the notch families' `K_t` errors.
-7. **The transverse displacement suffers most on the double notch** (`v` L2
-   0.10, against 0.016–0.019 elsewhere).
+   - **The dog-bone row uses a different nominal.** Phase 7 normalised by the
+     gauge-mean von Mises; converted to `N/A_gross` it is about 4.7–5.4%.
+   - **On a like-for-like basis** the hole is 1.4–3.9× the dog-bone and the
+     notches 4–7×. Relative to the local peak stress: about 1.9% on the
+     dog-bone, 5–7.5% on the notches.
+   - **Per geometry, the peak effect ranges from −11.7% to +9.5%.**
+   - **The sign does not track the `K_t` bias.** On the double notch the peak
+     effect is negative while the bias is positive on every seed, and
+     Spearman(δ, err) is −0.14 to −0.35 (not significant).
+   - **This script was not blind.** It was committed after four models had
+     finished.
+7. **The transverse displacement suffers most on the notches.** `v` L2 is 0.10
+   on the double notch and 0.057 on the single notch, against 0.016–0.019 on
+   the dog-bone, hole and inclusion.
+
+**What P-T4 does and does not establish.**
+- **What it does:** the family loop's optimiser, schedule and batching reproduce
+  the dog-bone's `K_t` result.
+- **What it does not test:**
+  - the distance-function layer or the family quadrature mesh — the dog-bone
+    path keeps the shipped Dirichlet layer and the standard energy loss. Those
+    are verified separately, at Level 0 and Level 3.
+  - displacement accuracy. The loop run's `u` and `v` L2 (1.8e-3, 3.0e-2) sit
+    above the 6.7 seeds' (1.1–1.4e-3, 1.5–1.8e-2). With one run, loop cannot be
+    told from seed.
 
 ### What this means for the paper
 
-- **The per-family table above is the multi-geometry validation the paper
-  needed.** Every entry is against an independent, Level-3-verified FEM
-  reference, on held-out geometries, over three seeds.
+- **The per-family table is the multi-geometry validation the paper needed.**
+  Every entry is against an independent, Level-3-verified FEM reference, on
+  held-out geometries, over three seeds.
 - **The claim it supports:** in-range stress-concentration prediction with skill
-  on four of five families, at 1.5–7% error, degrading with concentration
-  sharpness.
+  on four of five families (the dog-bone, hole, double notch and single notch),
+  at 1.5–6.8% error, beating the baseline by a factor of 1.6–3.
 - **The claims it rules out:**
-  - "extrapolates beyond the training range" (for holes and notches);
-  - a consistent sign of the error.
-- **The most promising lever is again the free edge.**
-  - The traction residual at notch roots is 10× the dog-bone's.
-  - Phase 7's C-series (a traction term on the arc, exact tractions through φ)
-    now has much more to gain on these families than on the dog-bone.
+  - general extrapolation (hole and notch families);
+  - a consistent sign of the error;
+  - "skill degrades with concentration sharpness" — within a family it
+    doesn't, and relative to the baseline it doesn't either.
+- **Where the next gain is.** Neither of these is the Phase 7 free-edge story
+  on its own:
+  - on the rigid inclusion, the field next to the curved Dirichlet boundary
+    (6–8% low at the true peak, maximum in the wrong place);
+  - on the double notch, spurious flank peaks out of range.
+
+  Ablation A-ADF and a look at the notch-flank field are the cheapest next
+  measurements.
+
+**Changed by the independent check (8.14):**
+- single-notch seed-2 bias −7.8% (was printed −7.9%);
+- the `v` L2 comparison;
+- the extrapolation reading (point 5);
+- the seed-offset reading (point 4);
+- the inclusion reading (point 2, previously "the layer works; it is signal
+  size");
+- the free-edge comparison (point 6, previously "an order of magnitude" and
+  "the most promising lever");
+- P-T4's scope;
+- "degrading with sharpness" withdrawn.
+
+No verdict changed.
