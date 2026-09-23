@@ -117,7 +117,7 @@ Expectations, stated so they can be wrong:
 - the four new families at seeds 0, 1 and 2;
 - the dog-bone through the family loop at seed 0.
 
-Each run took 65–70 min on one thread, two lanes in parallel, for about 8 h of
+Each run took 65–74 min on one thread, two lanes in parallel, for about 8 h of
 wall clock. Scores are in `docs/phase8_tier1_scores.json`, and
 `python -m verification.family_score --report` reproduces every verdict.
 
@@ -144,7 +144,7 @@ were wrong.
 | single notch, clamped | +0.67 ± 0.30 | 6.79 ± 2.53% | 15.86% | +0.11 ± 7.89% | 14.77 ± 7.87% | 7.2e-3 | 5.7e-2 | 2.1e-2 |
 
 In-range reference `K_t`:
-- dog-bone 1.16–1.30 (gauge definition);
+- dog-bone 1.17–1.30 (gauge definition);
 - open hole 3.12–4.01;
 - inclusion 1.41–1.50;
 - double notch 3.08–4.84;
@@ -169,9 +169,9 @@ In-range reference `K_t`:
      imposed by the distance-function layer. That layer works; the missing
      skill is about signal size, not boundary conditions.
 3. **Error grows with the concentration, across families but not within one.**
-   - In-range error rises roughly with the family's `K_t` level: 1.5% (dog-bone,
-     ~1.2), 1.8% (inclusion, ~1.45), 3.4% (hole, ~3.5), 4.1% (double notch,
-     ~4), 6.8% (single notch, ~4.5).
+   - In-range error rises roughly with the family's mean reference `K_t`: 1.5%
+     (dog-bone, 1.21), 1.8% (inclusion, 1.46), 3.4% (hole, 3.44), 4.1% (double
+     notch, 3.71), 6.8% (single notch, 4.47).
    - Within the double notch, sharper roots are not worse (P-T3 fails).
 4. **The sign of the error is family- and seed-dependent.**
    - The dog-bone, the hole and the inclusion are under-predicted on every seed.
