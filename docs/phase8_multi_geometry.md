@@ -1,7 +1,11 @@
 # Phase 8 — beyond the dog-bone: distance-function Dirichlet conditions and four new specimen families, validated against FEM
 
 **Status.**
-- **8.1 (the distance-function Dirichlet layer) is done and verified.**
+- **8.1 (the distance-function Dirichlet layer) is done and verified.** An
+  independent check then found three numerical defects. They are fixed and
+  now regression-tested (`cee6e49`, §3).
+- The same check found several overreaching statements in the first version
+  of this plan. They are corrected in place and listed in §10.
 - **8.2 has started.** The FEM reference was run on the first new family (the
   open-hole plate) and checked against the classical solution.
 - Everything else below is the plan.
@@ -36,12 +40,13 @@
 - The distance-function layer passes all its exactness checks on six
   geometries.
 - It reproduces the current network's boundary formula to machine precision.
-- It shows why the "normalised" construction matters: with a naive product,
-  the network loses control of the strain near corners of the boundary.
+- Where two fixed-displacement edges meet at a corner, the two standard ways
+  of building the formula behave differently. Which one gives better stresses
+  is an open question; the plan tests it rather than assuming an answer.
 - The FEM solver, unchanged, reproduces the handbook stress concentration of a
   plate with a hole to within 1%.
-- That plate is also insensitive to how its grip is modelled (0.006%), unlike
-  the dog-bone (1–4%).
+- That plate is also insensitive to how its grip is modelled (0.006%; 0.03–0.06%
+  for the shortest plates in range), unlike the dog-bone (1–4%).
 
 ---
 
@@ -79,9 +84,10 @@ prescribed grip displacement, exactly as the dog-bone.
 | **F5** | **single-edge U-notched plate, clamped grips** | half (no `y`-symmetry) | `u = 0` on `x = 0`; grip clamped, `u = u_δ` and `v = 0` | free notch root | Peterson Ch. 2 (single notch) | no symmetry plane for `v`; tension–bending coupling; clamped-vs-pinned sensitivity known from SENT testing |
 
 **Design rule carried over from Phase 7 B1.** Every new family keeps its grips
-at least `2W` from the concentration, so the reference `K_t` does not depend on
-how the grip is idealised.
-- Verified for F2 (§4): clamping moves `K_t` by 0.006%.
+at `L_half ≥ 1.5 W`, so the reference `K_t` does not depend on how the grip is
+idealised.
+- Verified for F2 (§4): clamping moves `K_t` by 0.006% at `L_half/W = 2`, and by
+  0.03–0.06% at `L_half/W = 1.5` for `d/W` 0.2–0.6.
 - The dog-bone moves by 1.2–4.2%.
 - F5 is the deliberate exception: clamping is part of its definition.
 
@@ -95,9 +101,15 @@ out-of-range split per family, as in 6.7).**
 | F4 | as F2 | as F2 | `d/W` 0.55–0.6 |
 | F5 | as F3, `L_half/W` 2–3 | as F3 | `t/W` 0.3–0.35 |
 
-**Tiers.** F2 and F3 are the core of the concentration-factor validation. F4
-and F5 are where the distance-function layer is necessary. If time forces a cut,
-keep F2 and F4: one new topology and one curved Dirichlet boundary.
+**Tiers.**
+- **F2 and F3** are the core of the concentration-factor validation.
+- **F4** is where the distance-function layer is necessary: a curved Dirichlet
+  arc that meets straight pieces. So is Phase 7's clamped grip *segment* (B2).
+- **F5** still has only full, parallel Dirichlet edges, so closed forms would
+  do. What it changes is the configuration: no symmetry plane for `v`, and a
+  clamped grip.
+- If time forces a cut, keep F2 and F4: one new topology and one curved
+  Dirichlet boundary.
 
 ## 3. The distance-function Dirichlet layer (8.1, done)
 
@@ -113,10 +125,14 @@ al. (2023) found most accurate.
 
 **The dog-bone ansatz is the special case.**
 - `R(x, L − x) = x(L − x)/L`, and the transfinite weight of the grip is `x/L`.
-- So `u = u_δ ξ + ξ(1 − ξ) N_u` and `v = (y/H) N_v`: exactly what the decoder
-  has always done.
-- The shipped formula was already the normalised construction, which is why it
-  passed the Phase 7 audit.
+- So `u = u_δ ξ + ξ(1 − ξ) N_u` and `v = (y/H) N_v`: what the decoder has always
+  done, identical in exact arithmetic.
+- In floating point the two agree to rounding (9.3e-17 in float64, 2.5e-8 in
+  float32), not bit for bit. A decoder regression test must use a tolerance,
+  or keep the legacy path for the dog-bone.
+- For two *parallel* pieces the normalised form and a plain product differ
+  only by a constant. So for the dog-bone the distinction is moot; it matters
+  where pieces meet or are not parallel.
 
 **Level-0 verification** (`python -m verification.adf_verify`, float64,
 thresholds fixed in `fbc41f4` before the run; output in
@@ -133,22 +149,35 @@ thresholds fixed in `fbc41f4` before the run; output in
 
 - **Against the shipped decoder** (`PhysicsDecoder._apply_hard_bc`): maximum
   relative difference **9.3e-17**. All checks pass.
-- **Why normalisation matters where Dirichlet pieces meet.** On the inclusion
-  arc approaching the corner `(0, r)`, where it meets the symmetry line:
+- **Three defects found by the independent check, fixed in `cee6e49`,** each now
+  a regression check that fails on the pre-fix code:
+  - float32 NaN at corner nodes: the division guard underflowed;
+  - NaN gradients exactly on a trimmed segment and at its ends;
+  - a corner lift that returned 0 where two pieces share non-zero data.
+- **What differs where Dirichlet pieces meet.** On the inclusion arc,
+  approaching the corner `(0, r)` where it meets the symmetry line:
 
 | `∂φ_u/∂n`, relative to mid-arc | `s = 0.1 r` | `0.01 r` | `0.001 r` |
 |---|---|---|---|
 | R-equivalence | 1.0000 | 1.0000 | 1.0000 |
 | plain product of the distances | 0.150 | 0.015 | 0.0015 |
 
-- **What this means for the network.** On a Dirichlet boundary the network
-  controls the normal strain only through `∂φ/∂n`.
-  - With a plain product, that control fades linearly to zero at every corner
-    where two Dirichlet pieces meet.
-  - This is the "may even ruin the convergence" failure Berrone et al. report,
-    shown here on our geometry.
-  - F4 has two such corners and its peak on the Dirichlet arc, so it is the
-    family where the choice becomes visible in the stress.
+- **This is a property, not a verdict.**
+  - R-equivalence keeps unit normal derivative up to the corner. Its Laplacian
+    is unbounded at the vertex (Berrone et al., App. A.1), which is harmless to
+    the energy form: it uses first derivatives only.
+  - The product's normal derivative decays linearly. But where two zero-data
+    pieces meet at 90°, as at both of F4's corners, the exact solution's
+    gradient vanishes at the corner too. So the product's decay has the right
+    shape there, and R-equivalence asks the network to learn `N → 0`.
+  - F4's peak (`σ_rr` at `(r, 0)`) is set by `u`'s multiplier, which has no
+    corner there.
+  - So no stress difference is predicted at the peak. Which construction gives
+    the better field near the corners is ablation A-ADF (§6).
+  - The earlier reading, that the product "loses control of the strain", was
+    an overreach. Berrone et al.'s reported failure of the product is about
+    values that become excessively small near multiple segments, not this
+    corner behaviour.
 
 ## 4. The FEM reference on a new family (8.2, started)
 
@@ -166,7 +195,7 @@ numbers in `docs/phase8_open_hole_fem.json`). Setup: plate `L_half = 40`,
 
 | `d/W` | `K_tn`, four meshes | extrapolated | Peterson | Heywood | vs Peterson |
 |---|---|---|---|---|---|
-| 0.2 | 2.504 / 2.510 / 2.510 / 2.508 | 2.507 | 2.507 | 2.512 | +0.01% |
+| 0.2 | 2.504 / 2.509 / 2.510 / 2.508 | 2.507 | 2.506 | 2.512 | +0.01% |
 | 0.3 | 2.339 / 2.360 / 2.357 / 2.358 | 2.354 | 2.347 | 2.343 | +0.32% |
 | 0.4 | 2.242 / 2.245 / 2.241 / 2.244 | 2.241 | 2.233 | 2.216 | +0.37% |
 | 0.5 | 2.179 / 2.164 / 2.169 / 2.170 | 2.176 | 2.156 | 2.125 | +0.95% |
@@ -179,7 +208,7 @@ numbers in `docs/phase8_open_hole_fem.json`). Setup: plate `L_half = 40`,
 | P-8.2d | the 1 mm load moves `K_tn` by < 3% | **−5.69%** | **FAILS** |
 
 **What P-8.2d says.**
-- At the project's load (nominal strain 2.5%, about 9% at the hole crown), the
+- At the project's load (nominal strain 2.5%; 8.2% at the crown element), the
   finite-strain `K_t` sits well below the linear handbook value.
 - Exploratory split: with the dog-bone's definition (peak Cauchy von Mises over
   a far-field mean) the drop is −3.1% (3.731 → 3.614). So about half of the
@@ -195,11 +224,17 @@ numbers in `docs/phase8_open_hole_fem.json`). Setup: plate `L_half = 40`,
   0.15–0.89%.
 - **So "extrapolated" is a least-squares line through noise**, not a Richardson
   limit.
-- **The cause** is the peak extraction: the maximum over element centroids
-  depends on where the nearest centroid falls relative to the crown.
-- **Why it matters.** That noise is comparable to the operator errors to be
-  measured (~1–2%). The extraction has to be fixed before any F2–F5 reference
-  is used for scoring (step 8.2b below).
+- **The cause is mostly the meshes being random and non-nested**, and partly
+  the peak extraction. The independent check found:
+  - at a fixed density, the peak moves 0.56–0.72% across mesher seeds at 42
+    elements per radius, and 0.11–0.13% at 85;
+  - boundary-extrapolated estimators did not shrink the four-mesh spread (0.26%
+    to 2.9%, depending on the estimator).
+- **Why it matters, and how much.**
+  - At the finest level the noise is about 0.1%, below the operator errors to
+    be measured (~1–2%). The coarse meshes are the problem.
+  - The fix for step 8.2b is nested or structured crown meshes (or averaging
+    over mesher seeds), not a cleverer estimator.
 
 ## 5. What has to be generalised
 
@@ -228,8 +263,9 @@ numbers in `docs/phase8_open_hole_fem.json`). Setup: plate `L_half = 40`,
   - `K_t` R² and |error| against the predict-the-mean baseline;
   - peak location and section force;
   - the free-edge residual.
-- F2–F5 are designed to be grip-insensitive, so their `K_t` means what the
-  handbook's `K_t` means (in the small-load limit).
+- F2–F4 are designed to be grip-insensitive, so their `K_t` means what the
+  handbook's `K_t` means (in the small-load limit). F5 is clamped by
+  definition.
 
 **Tier 2 (the geometry-informed claim): one operator across families.**
 - An oracle version (family one-hot plus padded parameters) and a point-cloud
@@ -240,18 +276,23 @@ numbers in `docs/phase8_open_hole_fem.json`). Setup: plate `L_half = 40`,
 
 **Two ablations that only these families make possible.**
 - **A-ADF (F4).** R-equivalence against the plain product in the Dirichlet
-  layer. §3 predicts the difference concentrates at the arc's two corners; the
-  stress prediction is written before it runs.
-- **A-free vs Dirichlet peak (F4 vs F2).**
-  - Phase 7 located the energy form's weakness at *free* edges, where the
-    traction condition is only natural.
-  - F2 and F4 share geometry and differ only in the hole boundary: free versus
-    bonded.
-  - Pre-registered here: **the in-range `K_t` error on F4 is below F2's on
-    every seed**, because F4's peak sits on a boundary the construction makes
-    exact.
-  - If this holds, it is the cleanest demonstration in the paper of *where*
-    energy-based operators lose accuracy.
+  layer.
+  - No winner is predicted (§3).
+  - The comparison is of field errors near the arc's two corners. A `K_t`
+    difference is not expected, because the peak's multiplier has no corner.
+- **F2 vs F4, descriptive only.**
+  - The first version of this plan pre-registered "F4's in-range `K_t` error is
+    below F2's on every seed". **It is withdrawn, before any run, as
+    confounded.**
+  - F4's concentration is lower and smoother: Goodier's solution gives
+    `σ_rr,max ≈ 1.5σ` for this material, against about `3σ` at a hole. A pass
+    would not isolate the free-versus-Dirichlet mechanism.
+  - Its stated reason was also misleading: the construction makes the
+    *displacement* exact on the arc, not the normal strain that sets the peak.
+  - Replacement: scale-free metrics (R², |error|/`K_t`), reported side by side
+    with no mechanistic claim.
+  - The mechanism test stays where Phase 7 put it: exact tractions on the same
+    family (C3), against the natural condition.
 
 **Verification per family, before any scoring** (the dog-bone's hierarchy,
 repeated):
@@ -259,15 +300,18 @@ repeated):
 - Level 3: FEM against the classical small-load `K_t`:
   - F2 done;
   - F3 and F5 against Peterson/Noda;
-  - F4 against Goodier's solution, derived with sympy.
+  - F4 against Goodier's solution, derived with sympy. It is an infinite-plate
+    solution, so the check uses a wide plate (`d/W ≤ 0.1`); the finite-width
+    references then rest on the verified mesher and solver.
 - Mesh convergence with the robust peak extraction.
 - A B1-style grip check.
 
 ## 7. Next steps, in order
 
-1. **8.2b — robust peak extraction** (a boundary-extrapolated peak, or a
-   structured mesh at the crown).
-   - Prediction: mesh-to-mesh spread < 0.2%, and monotonic convergence.
+1. **8.2b — convergent references.** Nested or structured crown meshes (or
+   averaging over mesher seeds).
+   - Prediction: monotonic convergence, and a seed-to-seed spread < 0.1% at the
+     finest level.
 2. **8.2c — `Shape` classes F3, F4, F5**, each with Level-3 and grip checks
    (predictions per family, committed first). F4 needs Goodier's `K_t` derived
    symbolically.
@@ -312,6 +356,23 @@ repeated):
    footing.
 4. Compute. Tier 1 on four families is about 12–20 CPU-hours at three seeds. A
    GPU run would change the seed count we can afford.
+
+## 10. Corrections to the first version of this plan
+
+An independent check of every number and claim was run after `53cc47c`.
+Corrected above:
+- d/W 0.2 table entries: 2.509 and 2.506.
+- Crown strain: 8.2%, not "about 9%".
+- The cause of the non-monotonic convergence (mostly the meshes).
+- The corner interpretation in §3: a property, not the failure Berrone et al.
+  report.
+- "Already the normalised construction, which is why it passed the audit":
+  moot for parallel pieces.
+- "Bit-identical" → equal to rounding.
+- The grip rule: `L_half ≥ 1.5 W`, measured.
+- F5 does not need the general layer.
+- "F2–F5 grip-insensitive" → F2–F4.
+- The confounded F4-vs-F2 prediction, withdrawn before any run.
 
 ## References (added in this phase)
 
