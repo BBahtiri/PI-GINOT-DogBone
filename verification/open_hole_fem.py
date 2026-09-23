@@ -111,7 +111,10 @@ def main():
     cl = solve_clamped(m, 1e-3)
     k_ref, _ = ktn(ref, r)
     k_cl, _ = ktn(cl, r)
-    fin = solve(m, 1.0, MU, LAM, STATE, n_steps=3, verbose=False)
+    # n_steps=1, as every reference solve: the solver seeds the full-load affine
+    # field, so load steps would start from an inconsistent state (first run
+    # crashed on exactly that, before any P-8.2c/d verdict was computed).
+    fin = solve(m, 1.0, MU, LAM, STATE, n_steps=1, verbose=False)
     k_fin, _ = ktn(fin, r)
     res["grip"] = {"Ktn_frictionless": k_ref, "Ktn_clamped": k_cl,
                    "rel": k_cl / k_ref - 1}
