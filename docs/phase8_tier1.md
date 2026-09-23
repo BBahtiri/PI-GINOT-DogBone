@@ -108,3 +108,115 @@ Expectations, stated so they can be wrong:
   clamping complicate the sign.
 - P-T3 holds.
 - P-T4 holds.
+
+---
+
+## Results
+
+**Budget.** 13 runs, all completed (`docs/phase8_tier1_runs.json`):
+- the four new families at seeds 0, 1 and 2;
+- the dog-bone through the family loop at seed 0.
+
+Each run took 65–70 min on one thread, two lanes in parallel, for about 8 h of
+wall clock. Scores are in `docs/phase8_tier1_scores.json`, and
+`python -m verification.family_score --report` reproduces every verdict.
+
+### Verdicts
+
+| | prediction | result | verdict |
+|---|---|---|---|
+| **P-T1** | every new family beats the constant in range (≥ 2 of 3 seeds) | open hole 3/3, double notch 3/3, single notch 3/3, **rigid inclusion 1/3** | **FAILS** (holds for 3 of 4 families) |
+| **P-T2** | free-edge peaks under-predicted on every seed | open hole 3/3 · **double notch 0/3** (over-predicted every seed) · **single notch 1/3** (+0.2, +7.9, −7.9%) | **FAILS** (holds for the open hole only) |
+| **P-T3** | sharper double notches have larger errors | Spearman −0.10, p = 0.56, n = 36 | **FAILS** |
+| **P-T4** | the family loop is equivalent to the trainer loop | dog-bone seed 0: R² +0.83, \|err\| 0.96%; the 6.7 trainer loop's seed 0 gave +0.85, 0.97% | **HOLDS** |
+
+Of the four expectations stated before the run, one was right (P-T4) and three
+were wrong.
+
+### Per family, three seeds (mean ± sd)
+
+| family | in-range `K_t` R² | in-range \|err\| | constant | in-range bias | out-of-range \|err\| | `u` L2 | `v` L2 | vm L2 |
+|---|---|---|---|---|---|---|---|---|
+| dog-bone (6.7, trainer loop) | +0.61 ± 0.22 | 1.51 ± 0.49% | 2.43% | −1.34 ± 0.69% | 3.67 ± 3.06% | 1.2e-3 | 1.6e-2 | 9.9e-3 |
+| open hole | +0.60 ± 0.24 | 3.36 ± 1.59% | 5.94% | −3.35 ± 1.61% | 12.30 ± 0.50% | 4.1e-3 | 1.9e-2 | 1.8e-2 |
+| rigid inclusion | −0.18 ± 0.29 | 1.75 ± 0.31% | 1.60% | −1.66 ± 0.47% | 1.80 ± 0.49% | 1.3e-3 | 1.7e-2 | 8.8e-3 |
+| double notch | +0.85 ± 0.10 | 4.09 ± 0.54% | 12.28% | +1.55 ± 1.08% | 17.26 ± 2.05% | 8.1e-3 | 1.0e-1 | 3.1e-2 |
+| single notch, clamped | +0.67 ± 0.30 | 6.79 ± 2.53% | 15.86% | +0.11 ± 7.89% | 14.77 ± 7.87% | 7.2e-3 | 5.7e-2 | 2.1e-2 |
+
+In-range reference `K_t`:
+- dog-bone 1.16–1.30 (gauge definition);
+- open hole 3.12–4.01;
+- inclusion 1.41–1.50;
+- double notch 3.08–4.84;
+- single notch 3.30–5.51.
+
+### What the numbers say
+
+1. **The method carries over to new geometry families, in range.**
+   - Four of the five families beat the predict-the-mean baseline on every
+     seed, the dog-bone included.
+   - Errors are 1.5–7%, against baselines of 2.4–15.9%.
+   - The loop check (P-T4) shows the rows are comparable: the same loop gives
+     the dog-bone the same result as before.
+2. **The rigid inclusion is accurate but shows no skill.**
+   - Its reference `K_t` hardly varies over the range (1.41–1.50), so the
+     baseline error is only 1.6%.
+   - The operator's 1.75% error is a consistent under-prediction (−1.1, −2.0,
+     −1.9%) rather than scatter.
+   - In absolute terms it is as accurate as the dog-bone, and it holds up out
+     of range (1.8%). That is the only new family where it does.
+   - This is the first family with its peak on a curved Dirichlet boundary
+     imposed by the distance-function layer. That layer works; the missing
+     skill is about signal size, not boundary conditions.
+3. **Error grows with the concentration, across families but not within one.**
+   - In-range error rises roughly with the family's `K_t` level: 1.5% (dog-bone,
+     ~1.2), 1.8% (inclusion, ~1.45), 3.4% (hole, ~3.5), 4.1% (double notch,
+     ~4), 6.8% (single notch, ~4.5).
+   - Within the double notch, sharper roots are not worse (P-T3 fails).
+4. **The sign of the error is family- and seed-dependent.**
+   - The dog-bone, the hole and the inclusion are under-predicted on every seed.
+   - The double notch is over-predicted on every seed.
+   - The single notch's bias swings from +7.9% to −7.9% between seeds.
+   - A seed-level offset of the whole peak dominates the per-geometry scatter.
+     This is the same seed sensitivity Phase 6 measured, larger on sharper
+     families.
+5. **Extrapolation fails on the hole and notch families.**
+   - Out-of-range errors are 12–17% (open hole: too low on every seed).
+   - The dog-bone re-test found no such cliff (3.7%), and the inclusion has
+     none (1.8%).
+   - Each family's out-of-range direction pushes `K_t` beyond anything in its
+     training set, and the operator does not follow the steep rise.
+   - Phase 6.7's "no extrapolation cliff" was a dog-bone result, not a general
+     one.
+6. **The free edge is much less traction-free at holes and notches**
+   (`docs/phase8_tier1_residuals.json`, descriptive).
+
+   | family | RMS \|P·N\|/σ_nom on the feature | at the peak, vm/\|σ_tt\| − 1 |
+   |---|---|---|
+   | dog-bone (Phase 7, arc) | ~2.3% | −0.4 to −0.9% |
+   | open hole | 7.4–18.4% | −0.2 to −1.0% |
+   | double notch | 21.0–26.7% | +0.3 to −4.5% |
+   | single notch | 21.7–32.8% | −0.5 to −3.4% |
+
+   - Phase 7's weakness of the energy form grows by an order of magnitude on
+     sharp features.
+   - At the peak point itself it moves von Mises by up to 4.5%, of the same
+     order as the notch families' `K_t` errors.
+7. **The transverse displacement suffers most on the double notch** (`v` L2
+   0.10, against 0.016–0.019 elsewhere).
+
+### What this means for the paper
+
+- **The per-family table above is the multi-geometry validation the paper
+  needed.** Every entry is against an independent, Level-3-verified FEM
+  reference, on held-out geometries, over three seeds.
+- **The claim it supports:** in-range stress-concentration prediction with skill
+  on four of five families, at 1.5–7% error, degrading with concentration
+  sharpness.
+- **The claims it rules out:**
+  - "extrapolates beyond the training range" (for holes and notches);
+  - a consistent sign of the error.
+- **The most promising lever is again the free edge.**
+  - The traction residual at notch roots is 10× the dog-bone's.
+  - Phase 7's C-series (a traction term on the arc, exact tractions through φ)
+    now has much more to gain on these families than on the dog-bone.
