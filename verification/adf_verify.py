@@ -31,11 +31,21 @@ and one comparison, reported rather than thresholded:
 
   C  inclusion: d phi_u / dn along the arc as it approaches the corner (0, r),
      R-equivalence against the plain product of the same distances (scaled to
-     1 at the arc's midpoint).  The literature (Berrone et al. 2023) predicts
-     the product's normal derivative decays to 0 at the corner while
-     R-equivalence holds 1; at a Dirichlet boundary that derivative *is* the
-     network's handle on the strain, so this is where the choice shows up in
-     the stress.
+     1 at the arc's midpoint).  R-equivalence holds 1; the product decays
+     linearly.  This is a property, not a verdict: where two zero-data pieces
+     meet at 90 degrees the exact solution's gradient also vanishes at the
+     corner, so the product's decay has the right shape there, while
+     R-equivalence has an unbounded Laplacian at the vertex (irrelevant to the
+     first-derivative energy form).  Which works better is ablation A-ADF.
+
+Added after an independent check found three bugs (commit 8.5), and kept as
+regression checks:
+
+  F32  float32 evaluation at the inclusion's corner nodes is finite
+  SEG  the trimmed segment's gradient exactly on the segment (ends included)
+       is finite and equals the domain-side normal n_in
+  TFI  where two pieces with the same *non-zero* data meet, the lift returns
+       that value (an earlier version returned 0)
 
     python -m verification.adf_verify
 """
@@ -243,6 +253,30 @@ def corner_comparison():
     return rows
 
 
+def bug_regressions():
+    """The three defects found by the independent check, as permanent tests."""
+    out = {}
+    # F32: corner nodes of the inclusion, float32
+    spec = inclusion()["spec"]
+    X = torch.tensor([[0.0, 4.0], [4.0, 0.0], [0.0, 10.0]], dtype=torch.float32)
+    vals = [spec.phi(X, 0), spec.phi(X, 1), spec.lift(X, 0), spec.lift(X, 1)]
+    out["F32"] = all(bool(torch.isfinite(v).all()) for v in vals)
+    # SEG: gradient on the clamped grip segment, ends included
+    xs = torch.tensor([[30.0, 10.0], [35.0, 10.0], [40.0, 10.0], [33.3, 10.0]],
+                      requires_grad=True)
+    (g,) = torch.autograd.grad(
+        adf.segment(xs, (30.0, 10.0), (40.0, 10.0), n_in=(0.0, -1.0)).sum(), xs)
+    out["SEG"] = bool(torch.isfinite(g).all()) and bool(
+        torch.allclose(g, torch.tensor([0.0, -1.0]).expand_as(g), atol=1e-12))
+    # TFI: shared non-zero data at a corner
+    pieces = [adf.Piece(lambda Z: adf.line(Z, (40.0, 0.0), (-1.0, 0.0)), 1.0),
+              adf.Piece(lambda Z: adf.segment(Z, (30.0, 10.0), (40.0, 10.0)), 1.0)]
+    sp = adf.DirichletSpec({0: pieces}, {0: 40.0})
+    Z = torch.tensor([[40.0, 10.0], [40.0, 9.999], [39.999, 10.0]])
+    out["TFI"] = bool(torch.allclose(sp.lift(Z, 0), torch.ones(3), atol=1e-9))
+    return out
+
+
 def main():
     print("Phase 8.1 -- Level-0 verification of the distance-function layer (float64)")
     print("=" * 84)
@@ -265,6 +299,10 @@ def main():
     print(f"   {'':<16}{'s = 0.1 r':>12}{'s = 0.01 r':>12}{'s = 0.001 r':>13}")
     for tag, vals in corner_comparison():
         print(f"   {tag:<16}" + "".join(f"{v:>12.4f}" for v in vals))
+    br = bug_regressions()
+    ok_all &= all(br.values())
+    print("\nRegression checks for the three fixed defects: "
+          + ", ".join(f"{k} {'PASS' if v else 'FAIL'}" for k, v in br.items()))
     print("\nAll Level-0 checks:", "PASS" if ok_all else "FAIL")
 
 
