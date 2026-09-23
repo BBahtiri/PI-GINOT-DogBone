@@ -56,6 +56,11 @@ class Shape:
         return []
 
     @property
+    def feature_disc(self):
+        """(cx, cy, R): a disc containing the refinement feature."""
+        raise NotImplementedError
+
+    @property
     def feature_length(self) -> float:
         raise NotImplementedError
 
@@ -98,6 +103,10 @@ class OpenHolePlate(Shape):
     @property
     def feature_length(self):
         return self.r
+
+    @property
+    def feature_disc(self):
+        return (0.0, 0.0, self.r)
 
     def boundary(self, size):
         L, H, r = self.L, self.H, self.r
@@ -174,17 +183,53 @@ def build_shape_mesh(shape: Shape, h: float, refine: float = 6.0,
     info = shape.info
     xmax, ymax = boundary_pts.max(0)
     xmin, ymin = boundary_pts.min(0)
+    # Interior nodes, level by level: a lattice of spacing s is laid only
+    # where the target size lies in [s, 2s), and only inside the box that can
+    # contain such points (the feature disc grown by the distance at which
+    # the size reaches 2s).  A single lattice at the finest spacing over the
+    # whole specimen -- the dog-bone mesher's approach -- costs tens of
+    # millions of candidates at a sharp notch root.  Within a level the
+    # thinning is the same as before: keep with probability (s / h_loc)^2.
+    cx, cy, cr = shape.feature_disc
+    delta = decay * lf
+
+    def reach(h_t):
+        w = (h / h_t - 1.0) / max(refine - 1.0, 1e-12)
+        if w >= 1.0:
+            return 0.0
+        if w <= 0.0:
+            return np.inf
+        return delta * np.sqrt(-np.log(w))
+
+    levels, s_l = [], h
+    while s_l > h_min * 1.0001:
+        levels.append(s_l)
+        s_l *= 0.5
+    levels.append(h_min)
     interior = []
-    for j, y in enumerate(np.arange(ymin + 0.5 * h_min, ymax, h_min)):
-        xs = np.arange(xmin + (j % 2) * 0.5 * h_min, xmax, h_min)
-        p = np.stack([xs, np.full_like(xs, y)], -1)
-        p = p[shape.inside(p[:, 0], p[:, 1])]
-        if not len(p):
-            continue
-        p = p[rng.random(len(p)) < (h_min / size(p)) ** 2]
-        if len(p):
-            p = p + rng.normal(0.0, 0.15 * h_min, size=p.shape)
-            interior.append(p[shape.inside(p[:, 0], p[:, 1])])
+    for li, s_l in enumerate(levels):
+        hi_size = np.inf if li == 0 else 2.0 * s_l
+        lo_size = 0.0 if li == len(levels) - 1 else s_l
+        d = reach(hi_size) if np.isfinite(hi_size) else np.inf
+        if np.isfinite(d):
+            bx0, bx1 = max(xmin, cx - cr - d), min(xmax, cx + cr + d)
+            by0, by1 = max(ymin, cy - cr - d), min(ymax, cy + cr + d)
+        else:
+            bx0, bx1, by0, by1 = xmin, xmax, ymin, ymax
+        for j, y in enumerate(np.arange(by0 + 0.5 * s_l, by1, s_l)):
+            xs = np.arange(bx0 + (j % 2) * 0.5 * s_l, bx1, s_l)
+            p = np.stack([xs, np.full_like(xs, y)], -1)
+            p = p[shape.inside(p[:, 0], p[:, 1])]
+            if not len(p):
+                continue
+            hl = size(p)
+            p, hl = p[(hl >= lo_size) & (hl < hi_size)], hl[(hl >= lo_size) & (hl < hi_size)]
+            if not len(p):
+                continue
+            p = p[rng.random(len(p)) < (s_l / hl) ** 2]
+            if len(p):
+                p = p + rng.normal(0.0, 0.15 * s_l, size=p.shape)
+                interior.append(p[shape.inside(p[:, 0], p[:, 1])])
 
     nodes = np.unique(np.round(np.concatenate([boundary_pts] + layers + interior), 9),
                       axis=0)
@@ -245,3 +290,169 @@ def build_shape_mesh(shape: Shape, h: float, refine: float = 6.0,
     return TriMesh(params=dict(info), fillet_info=info, nodes=nodes,
                    tris=simp.astype(np.int32), areas=areas, grads=grads,
                    boundary=boundary, h_target=h)
+
+
+# --------------------------------------------------------------------------
+# Phase 8.2c: the other three families
+# --------------------------------------------------------------------------
+@dataclass
+class RigidInclusionPlate(OpenHolePlate):
+    """Quarter plate with a bonded rigid inclusion of radius r at the centre.
+
+    Same geometry as the open-hole plate; the arc is a Dirichlet boundary
+    (u = v = 0 -- by symmetry the inclusion does not move), not a free edge.
+    The segment is called ``inclusion`` so no code can mistake it for a hole.
+    """
+    name = "inclusion"
+    segments = ("bottom", "right_grip", "top", "left_symmetry", "inclusion")
+
+    def boundary(self, size):
+        b = super().boundary(size)
+        b["inclusion"] = b.pop("hole")
+        return b
+
+    @property
+    def info(self):
+        i = super().info
+        i["family"] = self.name
+        return i
+
+
+def _notch_boundary(x0_top, y_top, t, rho, size, flank_name="flank",
+                    root_name="notch"):
+    """Right half of a U-notch cut down from y_top at x = 0 (quarter/half
+    models keep x >= 0): straight flank x = rho from y_top down to the root
+    centre, then the quarter arc of radius rho to (0, y_top - t)."""
+    yc = y_top - t + rho
+    h_root = float(size(np.array([[0.0, y_top - t]]))[0])
+    flank = (_graded_line((rho, y_top), (rho, yc), size)
+             if t - rho > 1e-9 else np.array([[rho, y_top]]))
+    n_arc = max(8, int(round(0.5 * np.pi * rho / h_root)))
+    th = np.linspace(0.0, -0.5 * np.pi, n_arc)
+    root = np.stack([rho * np.cos(th), yc + rho * np.sin(th)], -1)
+    return {flank_name: flank, root_name: root}
+
+
+def _in_notch(x, y, y_top, t, rho):
+    yc = y_top - t + rho
+    return ((x < rho) & (y > yc)) | (x * x + (y - yc) ** 2 < rho * rho)
+
+
+@dataclass
+class DoubleNotchPlate(Shape):
+    """Quarter of a plate of width 2H with a U-notch of depth t and root
+    radius rho (rho <= t) in each edge, at mid-length.
+
+    Segments (counter-clockwise): bottom (0,0) -> (L,0); right_grip;
+    top (L,H) -> (rho,H); flank (rho,H) -> (rho, H-t+rho); notch (root arc,
+    to (0, H-t)); left_symmetry (0, H-t) -> (0,0).
+    """
+    L: float
+    H: float
+    t: float
+    rho: float
+    name = "double_notch"
+    segments = ("bottom", "right_grip", "top", "flank", "notch", "left_symmetry")
+
+    def inside(self, x, y):
+        eps = 1e-9
+        box = (x >= -eps) & (x <= self.L + eps) & (y >= -eps) & (y <= self.H + eps)
+        return box & ~_in_notch(x + eps, y - eps, self.H, self.t, self.rho)
+
+    def feature_distance(self, pts):
+        yc = self.H - self.t + self.rho
+        return np.abs(np.hypot(pts[:, 0], pts[:, 1] - yc) - self.rho)
+
+    @property
+    def feature_length(self):
+        return self.rho
+
+    @property
+    def feature_disc(self):
+        return (0.0, self.H - self.t + self.rho, self.rho)
+
+    def boundary(self, size):
+        L, H, t, rho = self.L, self.H, self.t, self.rho
+        b = {"bottom": _graded_line((0.0, 0.0), (L, 0.0), size),
+             "right_grip": _graded_line((L, 0.0), (L, H), size),
+             "top": _graded_line((L, H), (rho, H), size)}
+        b.update(_notch_boundary(0.0, H, t, rho, size))
+        b["left_symmetry"] = _graded_line((0.0, H - t), (0.0, 0.0), size)
+        return b
+
+    def offset_layers(self, h_min, n):
+        yc = self.H - self.t + self.rho
+        out = []
+        for k in range(1, n + 1):
+            R = self.rho + k * h_min
+            m = max(4, int(round(0.5 * np.pi * R / h_min)) - k)
+            th = np.linspace(0.0, -0.5 * np.pi, m)[1:-1]
+            p = np.stack([R * np.cos(th), yc + R * np.sin(th)], -1)
+            out.append(p[self.inside(p[:, 0], p[:, 1])])
+        return out
+
+    @property
+    def info(self):
+        return {"family": self.name, "L_half": self.L, "H_grip": self.H,
+                "t": self.t, "rho": self.rho}
+
+
+@dataclass
+class SingleNotchPlate(Shape):
+    """Half of a plate of width W = 2H with one U-notch (depth t, root radius
+    rho) in its top edge at mid-length -- no symmetry about the length axis,
+    so the model spans the full width, shifted to y in [0, 2H].
+
+    Segments: bottom (0,0) -> (L,0), FREE; right_grip (clamped in the FEM:
+    u = u_delta, v = 0); top (L,2H) -> (rho,2H); flank; notch;
+    left_symmetry (0, 2H-t) -> (0,0), u = 0 and shear-free.
+    """
+    L: float
+    H: float
+    t: float
+    rho: float
+    name = "single_notch"
+    segments = ("bottom", "right_grip", "top", "flank", "notch", "left_symmetry")
+
+    def inside(self, x, y):
+        eps = 1e-9
+        top = 2.0 * self.H
+        box = (x >= -eps) & (x <= self.L + eps) & (y >= -eps) & (y <= top + eps)
+        return box & ~_in_notch(x + eps, y - eps, top, self.t, self.rho)
+
+    def feature_distance(self, pts):
+        yc = 2.0 * self.H - self.t + self.rho
+        return np.abs(np.hypot(pts[:, 0], pts[:, 1] - yc) - self.rho)
+
+    @property
+    def feature_length(self):
+        return self.rho
+
+    @property
+    def feature_disc(self):
+        return (0.0, 2.0 * self.H - self.t + self.rho, self.rho)
+
+    def boundary(self, size):
+        L, top, t, rho = self.L, 2.0 * self.H, self.t, self.rho
+        b = {"bottom": _graded_line((0.0, 0.0), (L, 0.0), size),
+             "right_grip": _graded_line((L, 0.0), (L, top), size),
+             "top": _graded_line((L, top), (rho, top), size)}
+        b.update(_notch_boundary(0.0, top, t, rho, size))
+        b["left_symmetry"] = _graded_line((0.0, top - t), (0.0, 0.0), size)
+        return b
+
+    def offset_layers(self, h_min, n):
+        yc = 2.0 * self.H - self.t + self.rho
+        out = []
+        for k in range(1, n + 1):
+            R = self.rho + k * h_min
+            m = max(4, int(round(0.5 * np.pi * R / h_min)) - k)
+            th = np.linspace(0.0, -0.5 * np.pi, m)[1:-1]
+            p = np.stack([R * np.cos(th), yc + R * np.sin(th)], -1)
+            out.append(p[self.inside(p[:, 0], p[:, 1])])
+        return out
+
+    @property
+    def info(self):
+        return {"family": self.name, "L_half": self.L, "H_grip": 2.0 * self.H,
+                "t": self.t, "rho": self.rho}
