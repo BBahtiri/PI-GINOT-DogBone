@@ -116,12 +116,37 @@ def _sample_circle(
 
 # Quarter-model geometry generation (no-hole topology)
 
+def _measure_consistent_counts(lengths: dict, n_per_segment: int,
+                               min_per_segment: int = 20) -> dict:
+    """Distribute the same total point budget in proportion to arc length.
+
+    The default sampling puts ``n_pts_per_segment`` on every segment
+    regardless of how long it is, so on a typical specimen the 5 mm symmetry
+    face carries the same 400 points as the 27 mm bottom face -- a 5x (up to
+    9.5x over the parameter ranges) variation in points per millimetre.  That
+    biases both the encoder's view of the shape and the pool the boundary
+    collocation sampler draws from.  This keeps the total identical and only
+    changes how it is shared out.
+    """
+    names = list(lengths)
+    total_budget = n_per_segment * len(names)
+    total_len = sum(lengths.values())
+    remaining = total_budget - min_per_segment * len(names)
+    raw = np.array([remaining * lengths[k] / total_len for k in names])
+    counts = np.floor(raw).astype(int)
+    left = remaining - counts.sum()
+    if left > 0:
+        counts[np.argsort(-(raw - counts))[:left]] += 1
+    return {k: min_per_segment + int(c) for k, c in zip(names, counts)}
+
+
 def generate_dogbone(
     params: Optional[dict] = None,
     n_pts_per_segment: int = 100,
     n_interior: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
     verbose: bool = False,
+    measure_consistent: Optional[bool] = None,
 ) -> DogBoneMesh:
     """Generate a DogBone quarter-model from geometry parameters.
 
@@ -182,32 +207,53 @@ def generate_dogbone(
     theta_start = math.atan2(dH - R, dx_fillet)
     theta_end   = -math.pi / 2.0
 
-    n = n_pts_per_segment
+    # Points per segment: uniform by default, or shared out by arc length when
+    # measure_consistent is on (same total either way).  See
+    # verification/geometry_checks.py for what the uniform choice costs.
+    if measure_consistent is None:
+        measure_consistent = COLLOCATION_CONFIG.get(
+            "boundary_measure_consistent", False)
+    seg_len = {
+        "bottom": L_half,
+        "right_grip": H_grip,
+        "right_arc": R * abs(theta_start - theta_end),
+        "gauge_top": x_g,
+        "left_symmetry": H_gauge,
+    }
+    if measure_consistent:
+        n_seg = _measure_consistent_counts(seg_len, n_pts_per_segment)
+    else:
+        n_seg = {k: n_pts_per_segment for k in seg_len}
 
     # Sample each boundary segment (counter-clockwise)
     segments: List[BoundarySegment] = []
 
     # 1) Bottom (horizontal symmetry, y=0): (0,0) -> (L_half,0)
+    n = n_seg["bottom"]
     pts_bottom = _sample_line(np.array([0.0, 0.0]), np.array([L_half, 0.0]), n)
     norm_bottom = np.tile(np.array([0.0, -1.0], dtype=np.float32), (n, 1))
     segments.append(BoundarySegment("bottom", pts_bottom, norm_bottom, "symmetry_y"))
 
     # 2) Right grip: (L_half,0) -> (L_half, H_grip)
+    n = n_seg["right_grip"]
     pts_right = _sample_line(np.array([L_half, 0.0]), np.array([L_half, H_grip]), n)
     norm_right = np.tile(np.array([1.0, 0.0], dtype=np.float32), (n, 1))
     segments.append(BoundarySegment("right_grip", pts_right, norm_right, "dirichlet"))
 
     # 3) Right fillet arc: P3(L_half, H_grip) -> P4(x_g, H_gauge)
+    n = n_seg["right_arc"]
     pts_arc = _sample_arc(arc_center, R, theta_start, theta_end, n)
     norm_arc = _arc_outward_normals(pts_arc, arc_center, outward_sign=-1.0)
     segments.append(BoundarySegment("right_arc", pts_arc, norm_arc, "traction_free"))
 
     # 4) Gauge top: (x_g, H_gauge) -> (0, H_gauge)
+    n = n_seg["gauge_top"]
     pts_gauge = _sample_line(np.array([x_g, H_gauge]), np.array([0.0, H_gauge]), n)
     norm_gauge = np.tile(np.array([0.0, 1.0], dtype=np.float32), (n, 1))
     segments.append(BoundarySegment("gauge_top", pts_gauge, norm_gauge, "traction_free"))
 
     # 5) Left symmetry (vertical symmetry, x=0): (0, H_gauge) -> (0, 0)
+    n = n_seg["left_symmetry"]
     pts_left = _sample_line(np.array([0.0, H_gauge]), np.array([0.0, 0.0]), n)
     norm_left = np.tile(np.array([-1.0, 0.0], dtype=np.float32), (n, 1))
     segments.append(BoundarySegment("left_symmetry", pts_left, norm_left, "symmetry_x"))

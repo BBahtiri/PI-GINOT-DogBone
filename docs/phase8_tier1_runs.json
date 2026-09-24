@@ -1,0 +1,106 @@
+{
+  "open_hole|0": {
+    "family": "open_hole",
+    "seed": 0,
+    "steps": 1600,
+    "wall_min": 64.99892487923304,
+    "final_loss": 0.0003327172416902613,
+    "s_per_step": 2.437459682971239
+  },
+  "open_hole|1": {
+    "family": "open_hole",
+    "seed": 1,
+    "steps": 1600,
+    "wall_min": 65.53709773222606,
+    "final_loss": 0.0003327183621877339,
+    "s_per_step": 2.457641164958477
+  },
+  "open_hole|2": {
+    "family": "open_hole",
+    "seed": 2,
+    "steps": 1600,
+    "wall_min": 66.47336519559225,
+    "final_loss": 0.00033282741060247645,
+    "s_per_step": 2.492751194834709
+  },
+  "inclusion|0": {
+    "family": "inclusion",
+    "seed": 0,
+    "steps": 1600,
+    "wall_min": 68.01996120611827,
+    "final_loss": 0.00034468533704057336,
+    "s_per_step": 2.550748545229435
+  },
+  "inclusion|1": {
+    "family": "inclusion",
+    "seed": 1,
+    "steps": 1600,
+    "wall_min": 67.03205642302831,
+    "final_loss": 0.0003446890077611897,
+    "s_per_step": 2.5137021158635617
+  },
+  "inclusion|2": {
+    "family": "inclusion",
+    "seed": 2,
+    "steps": 1600,
+    "wall_min": 66.59164908329646,
+    "final_loss": 0.0003447057169978507,
+    "s_per_step": 2.497186840623617
+  },
+  "double_notch|0": {
+    "family": "double_notch",
+    "seed": 0,
+    "steps": 1600,
+    "wall_min": 67.8015253186226,
+    "final_loss": 0.00038469993887702003,
+    "s_per_step": 2.542557199448347
+  },
+  "double_notch|1": {
+    "family": "double_notch",
+    "seed": 1,
+    "steps": 1600,
+    "wall_min": 66.52766544421515,
+    "final_loss": 0.00038499148649862036,
+    "s_per_step": 2.4947874541580677
+  },
+  "double_notch|2": {
+    "family": "double_notch",
+    "seed": 2,
+    "steps": 1600,
+    "wall_min": 66.70022257566453,
+    "final_loss": 0.0003847522893920541,
+    "s_per_step": 2.5012583465874196
+  },
+  "single_notch|0": {
+    "family": "single_notch",
+    "seed": 0,
+    "steps": 1600,
+    "wall_min": 68.23006622393926,
+    "final_loss": 0.0002406907151453197,
+    "s_per_step": 2.5586274833977223
+  },
+  "single_notch|1": {
+    "family": "single_notch",
+    "seed": 1,
+    "steps": 1600,
+    "wall_min": 68.99187506437302,
+    "final_loss": 0.00024078843125607818,
+    "s_per_step": 2.587195314913988
+  },
+  "single_notch|2": {
+    "family": "single_notch",
+    "seed": 2,
+    "steps": 1600,
+    "wall_min": 68.55915743907293,
+    "final_loss": 0.00024083923926809803,
+    "s_per_step": 2.5709684039652347
+  },
+  "dogbone|0": {
+    "family": "dogbone",
+    "seed": 0,
+    "steps": 1600,
+    "wall_min": 73.52008089224498,
+    "final_loss": 0.0005196546408114955,
+    "s_per_step": 2.7570030334591866
+  }
+}

@@ -1,5 +1,10 @@
 # PI-GINOT Agentic Studio — Databricks App Dependencies
 # Deployed via: databricks apps deploy
+#
+# NOTE: this file is for the agent application only.  To reproduce the
+# physics — training, verification, evaluation, tests — install
+# requirements-core.txt instead.  Reproducing the science must not require
+# installing Streamlit or LangGraph.
 
 # ── Streamlit UI ──
 streamlit>=1.38.0

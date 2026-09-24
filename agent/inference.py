@@ -207,13 +207,13 @@ def _build_reference_latents(
             coll = sample_collocation_points(mesh, rng=rng)
 
             bpc = torch.tensor(
-                coll.boundary_pc, dtype=torch.float32, device=device
+                coll.boundary_pc, dtype=torch.get_default_dtype(), device=device
             ).unsqueeze(0)
             x_m = torch.tensor(
-                [coll.x_max], dtype=torch.float32, device=device
+                [coll.x_max], dtype=torch.get_default_dtype(), device=device
             )
             y_m = torch.tensor(
-                [coll.y_max], dtype=torch.float32, device=device
+                [coll.y_max], dtype=torch.get_default_dtype(), device=device
             )
 
             z = model.encode(bpc, x_m, y_m)
@@ -347,7 +347,9 @@ class InferenceEngine:
 
         # Build model
         model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(
+            PI_GINOT.strip_legacy_keys(checkpoint["model_state_dict"])[0]
+        )
         model.to(dev)
         model.eval()
 
@@ -357,7 +359,7 @@ class InferenceEngine:
             nu=MATERIAL_CONFIG["nu"],
             mu=MATERIAL_CONFIG["mu"],
             lam=MATERIAL_CONFIG["lam"],
-            state=MATERIAL_CONFIG.get("state", "plane strain"),
+            state=MATERIAL_CONFIG["state"],
         )
 
         # Build training bank params using checkpoint-recorded config
@@ -445,15 +447,15 @@ class InferenceEngine:
 
         # Tensors
         def _t(arr):
-            return torch.tensor(arr, dtype=torch.float32,
+            return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                 device=self.device).unsqueeze(0)
 
         bpc = _t(coll.boundary_pc)
-        x_max = torch.tensor([coll.x_max], dtype=torch.float32,
+        x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(),
                              device=self.device)
-        y_max = torch.tensor([coll.y_max], dtype=torch.float32,
+        y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(),
                              device=self.device)
-        u_delta = torch.tensor([self.u_max], dtype=torch.float32,
+        u_delta = torch.tensor([self.u_max], dtype=torch.get_default_dtype(),
                                device=self.device)
 
         query = _t(coll.interior_pts).requires_grad_(True)

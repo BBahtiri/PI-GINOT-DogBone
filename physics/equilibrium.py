@@ -29,22 +29,25 @@ def _predict_piola(
     mu: float,
     lam: float,
     y_max: torch.Tensor = None,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
+    return_J3D: bool = False,
 ):
     """Run model forward → displacement grads → 1st Piola stress P.
 
     Returns:
-        P11, P12, P21, P22, detF: each [B, N, 1].
+        P11, P12, P21, P22, detF            (return_J3D=False)
+        P11, P12, P21, P22, detF, J3D       (return_J3D=True)
+        each [B, N, 1].
     """
     assert query_pts.requires_grad, "query_pts must have requires_grad=True"
 
     uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
         query_pts, geometry_latent, u_delta, x_max, y_max
     )
-    P11, P12, P21, P22, detF = first_piola_kirchhoff_stress(
-        du_dx, du_dy, dv_dx, dv_dy, mu, lam, stress_state
+    return first_piola_kirchhoff_stress(
+        du_dx, du_dy, dv_dx, dv_dy, mu, lam, stress_state,
+        return_J3D=return_J3D,
     )
-    return P11, P12, P21, P22, detF
 
 
 # Equilibrium: Div(P) = 0
@@ -57,7 +60,9 @@ def equilibrium_residual(
     mu: float,
     lam: float,
     y_max: torch.Tensor = None,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
+    return_J3D: bool = False,
+    create_graph: bool = True,
 ) -> tuple:
     """Compute equilibrium residual Div(P) = 0 at interior points.
 
@@ -67,33 +72,55 @@ def equilibrium_residual(
 
     Returns:
         f_x, f_y: [B, N, 1] equilibrium residuals (should → 0).
-        detF:     [B, N, 1] determinant of F (for barrier loss).
+        detF:     [B, N, 1] in-plane determinant J2D (for barrier loss).
+        J3D:      [B, N, 1] 3D determinant, only if return_J3D=True.
+
+    ``create_graph`` must stay True for training (the optimiser
+    differentiates this residual again).  Pass False for evaluation-only
+    calls: the second-order graph is then never built, which is a large
+    memory saving on a dense point set.
     """
-    P11, P12, P21, P22, detF = _predict_piola(
+    out = _predict_piola(
         model, query_pts, geometry_latent, u_delta, x_max, mu, lam,
-        y_max, stress_state,
+        y_max, stress_state, return_J3D=return_J3D,
     )
+    if return_J3D:
+        P11, P12, P21, P22, detF, J3D = out
+    else:
+        P11, P12, P21, P22, detF = out
 
     ones = torch.ones_like(P11)
 
+    def _dP(component):
+        """d(component)/d(query_pts), with the constant-stress case handled.
+
+        allow_unused covers a stress component that genuinely does not depend
+        on position — an affine displacement field, i.e. the finite-strain
+        patch test.  Its derivative is zero, and returning zero is the correct
+        answer rather than a RuntimeError.  A trained network never produces a
+        spatially constant field, so this branch does not fire during training.
+        """
+        if not component.requires_grad:
+            # Constant stress: no graph at all, so autograd would refuse.
+            return torch.zeros_like(query_pts)
+        g = torch.autograd.grad(
+            component, query_pts, ones, create_graph=create_graph,
+            retain_graph=True, allow_unused=True,
+        )[0]
+        return torch.zeros_like(query_pts) if g is None else g
+
     # P is NOT symmetric → need 4 separate grad calls
-    dP11 = torch.autograd.grad(
-        P11, query_pts, ones, create_graph=True, retain_graph=True
-    )[0]  # [B, N, 2]
-    dP12 = torch.autograd.grad(
-        P12, query_pts, ones, create_graph=True, retain_graph=True
-    )[0]
-    dP21 = torch.autograd.grad(
-        P21, query_pts, ones, create_graph=True, retain_graph=True
-    )[0]
-    dP22 = torch.autograd.grad(
-        P22, query_pts, ones, create_graph=True, retain_graph=True
-    )[0]
+    dP11 = _dP(P11)   # [B, N, 2]
+    dP12 = _dP(P12)
+    dP21 = _dP(P21)
+    dP22 = _dP(P22)
 
     # Div(P)_i = ∂P_{iJ}/∂X_J
     f_x = dP11[..., 0:1] + dP12[..., 1:2]   # ∂P11/∂X + ∂P12/∂Y
     f_y = dP21[..., 0:1] + dP22[..., 1:2]   # ∂P21/∂X + ∂P22/∂Y
 
+    if return_J3D:
+        return f_x, f_y, detF, J3D
     return f_x, f_y, detF
 
 
@@ -135,18 +162,20 @@ def boundary_piola(
     mu: float,
     lam: float,
     y_max: torch.Tensor = None,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
+    return_J3D: bool = False,
 ) -> tuple:
     """Compute 1st Piola stress at boundary collocation points.
 
     Returns:
-        P11, P12, P21, P22, detF: each [B, N, 1].
+        P11, P12, P21, P22, detF            (return_J3D=False)
+        P11, P12, P21, P22, detF, J3D       (return_J3D=True)
+        each [B, N, 1].
     """
-    P11, P12, P21, P22, detF = _predict_piola(
+    return _predict_piola(
         model, bnd_pts, geometry_latent, u_delta, x_max, mu, lam,
-        y_max, stress_state,
+        y_max, stress_state, return_J3D=return_J3D,
     )
-    return P11, P12, P21, P22, detF
 
 
 # Traction residuals
@@ -160,7 +189,8 @@ def traction_residual_full(
     mu: float,
     lam: float,
     y_max: torch.Tensor = None,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
+    return_J3D: bool = False,
 ) -> tuple:
     """Full traction residual P · N = 0 (both components).
 
@@ -168,13 +198,20 @@ def traction_residual_full(
 
     Returns:
         trac_x, trac_y: [B, N, 1] traction components.
-        detF:            [B, N, 1] for barrier loss on boundary.
+        detF:           [B, N, 1] in-plane determinant J2D (barrier loss).
+        J3D:            [B, N, 1] 3D determinant, only if return_J3D=True.
     """
-    P11, P12, P21, P22, detF = boundary_piola(
+    out = boundary_piola(
         model, bnd_pts, geometry_latent, u_delta, x_max, mu, lam,
-        y_max, stress_state,
+        y_max, stress_state, return_J3D=return_J3D,
     )
+    if return_J3D:
+        P11, P12, P21, P22, detF, J3D = out
+    else:
+        P11, P12, P21, P22, detF = out
     trac_x, trac_y = traction(P11, P12, P21, P22, normals)
+    if return_J3D:
+        return trac_x, trac_y, detF, J3D
     return trac_x, trac_y, detF
 
 
@@ -189,7 +226,7 @@ def traction_residual_partial(
     mu: float,
     lam: float,
     y_max: torch.Tensor = None,
-    stress_state: str = "plane strain",
+    stress_state: str = None,
 ) -> torch.Tensor:
     """Partial traction residual (single component per point).
 

@@ -18,9 +18,10 @@ Unit system (consistent with PINN-DogBone):
 Stress formulation:
     The physics engine uses 1st Piola–Kirchhoff stress P in the reference
     configuration.  Equilibrium: Div(P) = 0.  Traction: P · N = 0.
-    Current setting: plane strain (F33 = 1).  For a thin tensile specimen,
-    plane stress may be more appropriate — this would require solving for
-    F33 such that P33 = 0 (not yet implemented).
+    Current setting: plane stress.  F33 is solved from P33 = 0 by a Newton
+    closure (physics/neo_hookean.solve_F33_plane_stress) and the 3D
+    determinant J3D = J2D·F33 enters the log term.  Set
+    MATERIAL_CONFIG["state"] = "plane strain" for the F33 = 1 formulation.
 
 Topology:
     No-hole single-topology operator.  Holes are permanently disabled.
@@ -72,7 +73,6 @@ MATERIAL_CONFIG["lam"] = (_E * _nu) / ((1.0 + _nu) * (1.0 - 2.0 * _nu))
 # Nondimensionalization scales
 NONDIM_SCALES = {
     "L0": 50.0,                     # [mm]  Characteristic length
-    "U0": 1.0,                      # [mm]  Characteristic displacement (= u_max)
     "S0": MATERIAL_CONFIG["E"],     # [MPa] Characteristic stress (= E)
 }
 
@@ -126,8 +126,17 @@ COLLOCATION_CONFIG = {
     "n_boundary_per_segment": 400,  # Boundary points per segment (5 segs * 400 = 2000 pool)
     "n_boundary_pc": 320,           # Boundary point cloud size for encoder
     "n_total_boundary": 1600,       # Total boundary points for physics loss
-    "mesh_size": 1.0,               # [mm] stale (no gmsh)
-    "mesh_size_fine": 0.5,          # [mm] stale (no gmsh)
+
+    # Boundary points are placed uniformly per segment by default, so points
+    # per millimetre varies 5x (up to 9.5x over the geometry ranges) between
+    # the 5 mm symmetry face and the 27 mm bottom face.  That biases the
+    # encoder's view of the shape, and it starves the boundary collocation
+    # sampler's pool on the longest segment, which then cannot receive its
+    # arc-length share (1398 of 1600 points are returned at these settings).
+    # True shares the same total out by arc length instead.  Default False so
+    # existing checkpoints and results stay interpretable; flip it as an
+    # ablation.  See verification/geometry_checks.py.
+    "boundary_measure_consistent": False,
 }
 
 # Coordinate normalization
@@ -158,15 +167,163 @@ TRAINING_CONFIG = {
     "batch_size": 8,                # Sample 8 from bank of 128 each epoch
     "num_workers": 4,               # DataLoader workers
 
+    # Loss formulation.
+    #   'penalty' — weighted residuals: Div P = 0 plus traction penalties
+    #               (the original formulation; every number reported up to
+    #               Phase 1 was produced with it)
+    #   'energy'  — total potential energy Pi = integral Psi dV.  Every
+    #               boundary here is hard Dirichlet, traction-free or a
+    #               symmetry plane, so the external work term vanishes and
+    #               this one term replaces w_equilibrium, w_trac_top,
+    #               w_trac_arc and w_traction_partial; the traction
+    #               conditions become natural BCs of the minimum.
+    #               Measured against the FEM reference on three geometries:
+    #               u 12.5x better, von Mises 5.6x, section force <= 0.5%,
+    #               and 3.4-5.1x cheaper per epoch.  See
+    #               docs/phase2_energy_form.md.
+    #               Default stays 'penalty' until the operator is retrained,
+    #               so existing results remain comparable.
+    "loss_form": "penalty",
+    # 'hybrid':     the energy functional with the equilibrium residual added
+    #               back.  loss_form had always been one form or the other;
+    #               Phase 2 compared them, the energy form won, and L_eq left
+    #               the objective with the form that carried it.  Phase 6.4
+    #               made the sum worth trying: supervising this architecture
+    #               on stress reaches K_t R^2 +0.98, while a 0.2% displacement
+    #               fit on the very specimens it is scored on still gives
+    #               R^2 -0.55 -- so the objective needs a term sensitive to
+    #               the stress, and L_eq is the only one the physics offers
+    #               without changing the architecture.  Tractions stay
+    #               natural BCs.  See physics/weak_form.py::HybridLoss.
+    "w_equilibrium_hybrid": 100.0,  # same nondimensionalisation as
+                                    # w_equilibrium, so the penalty form's
+                                    # value is the sensible starting point
+    "energy_quad_degree": 2,        # fixed-rule degree (unused when resampling)
+    "energy_n_elem": 1400,          # quadrature triangles per geometry
+    "energy_resample": True,        # stratified resampling — DO NOT disable:
+                                    # a fixed rule collapses (Pi/Pi_ref -> 0.007
+                                    # while the field gets 3x worse)
+    "energy_n_per_elem": 3,         # stratified samples per triangle
+    # Traction-free residuals under the ENERGY form.  These are redundant at
+    # the exact minimiser -- Pi's natural BCs are exactly P.N = 0 on these
+    # segments -- so they cannot bias the converged answer.  What they change
+    # is the approach.  docs/phase3_transverse_conditioning.md measures the
+    # same relative field error costing 183x more energy in the axial
+    # direction than the transverse one, so the transverse component sits in
+    # the objective's near-null space and "satisfied at the minimum" never
+    # arrives.  The gauge-top term is the one Phase 1 identified as the only
+    # carrier of transverse information.  0.0 = off, i.e. the energy form
+    # exactly as Phase 2 measured it.
+    "energy_w_trac_top": 0.0,
+    "energy_w_trac_arc": 0.0,
+    # Section anchor under the energy form.  This is a WEIGHT, not a gate: the
+    # energy loss is O(5e-4) nondimensional against a penalty loss of O(1), so
+    # sharing `w_resultant` (10.0) would make the anchor dominate by orders of
+    # magnitude for no stated reason.  0.0 = off, which is what Phase 2 shipped
+    # on the strength of a <=0.5% force error with no anchor at all -- measured
+    # on ONE fine-tuned specimen.  The operator study (docs/phase2_operator.md)
+    # shows that justification does not transfer: with capacity shared across a
+    # bank the energy form's force error is 3.5% against the penalty form's
+    # 2.5%.  Natural BCs are only satisfied AT the minimum.
+    "w_resultant_energy": 0.0,
+    # Weight on the ABSOLUTE anchor under the energy form, kept separate from
+    # the consistency weight above because the two terms differ by ~1000x in
+    # magnitude: the consistency terms start near 0.4, the anchor is a squared
+    # relative error (~3e-4 at a 2% miss).  A single scalar over the sum
+    # cannot tune both -- any weight that makes the level matter makes the
+    # consistency terms dominate the whole loss.  The first anchor sweep
+    # (docs/phase2_operator.md) varied only the sum and so appeared to test the
+    # absolute anchor while it contributed ~0.01% of the signal.
+    "w_resultant_abs_energy": 0.0,
+
+    # Geometry auxiliary loss: supervise the ENCODER to predict the four
+    # dimensionless shape descriptors (geometry/descriptors.py) from its
+    # latent.  Targets are known for free when a training geometry is
+    # generated, so this costs no reference solution.
+    #
+    # The motivation is measured, not assumed.  The encoder carries the taper
+    # ratio at probe R^2 0.974 and the fillet at 0.03-0.30, and making the
+    # fillet more available (4x the FPS centroids, decodability 0.156 -> 0.451)
+    # changes no field metric by more than 1%.  So it is not that the encoder
+    # cannot see the fillet -- it never learns to, because the only reward for
+    # doing so arrives through a transverse channel the objective attenuates
+    # 183x.  This term pays for the extraction directly.
+    # See docs/phase4_geometry_encoder.md.  0.0 = off.
+    "w_geom_aux": 0.0,
+
+    # Geometry conditioning path.
+    #   'pointcloud' — the GeometryEncoder over the boundary point cloud
+    #                  (default; generalises beyond the parametric family)
+    #   'parameters' — an MLP over the four dimensionless shape descriptors
+    #                  (geometry/descriptors.py), valid only for this
+    #                  parametric family, where the four numbers are known
+    #
+    # This is the single largest lever measured in the project.  At equal
+    # budget, on eight held-out geometries spanning taper 0.31-0.82 and over
+    # three seeds, 'parameters' beats 'pointcloud' by 3.32 +- 0.01 on the
+    # transverse displacement, 3.58 +- 0.31 on the axial one and 2.25 +- 0.14
+    # on von Mises; trained out to 1600 epochs the transverse ratio is 5.30.
+    # Phase 4 ruled out closing that gap by repairing the encoder in place --
+    # sampling resolution, a supervised geometry head, and both together each
+    # buy at most 1.21x.  See docs/phase4_geometry_encoder.md and
+    # docs/phase5_hardening.md.
+    #
+    # Default is 'pointcloud' so existing checkpoints and results stay valid.
+    "conditioning": "pointcloud",
+
     # Physics loss weights (initial, before adaptive balancing)
     "w_equilibrium": 100.0,         # Raised 10x: must dominate to break uniform-strain baseline
     "w_trac_top": 2.0,              # Reduced: equilibrium + resultant should drive learning
+                                    # NOTE: this is the only term that sets the
+                                    # lateral contraction (P.N=0 on gauge_top
+                                    # means P22=P12=0), and it is the lowest
+                                    # weight here -- 50x below w_equilibrium.
+                                    # Raising it to 100 cuts the transverse
+                                    # displacement error 1.46x on average over
+                                    # 7 geometries spanning the taper range --
+                                    # 2.1x where the operator is weakest, ~1.0x
+                                    # where it is already good -- at no axial
+                                    # cost and ~1pp on the section force.
+                                    # Not changed by default: all the evidence
+                                    # is single-geometry training, and this is
+                                    # a training-wide knob. Ablation row. See
+                                    # docs/phase1_transverse_study.md.
     "w_trac_arc": 20.0,             # Reduced: was over-weighting local arc at expense of global balance
     "w_traction_partial": 2.0,      # Reduced for same reason
     "w_barrier": 1e3,               # detF barrier weight (strong during warmup)
     "w_resultant": 10.0,            # Raised: primary tool for enforcing N(gauge)=N(grip)
     "n_resultant_slices": 16,       # Number of vertical slices for resultant
     "n_resultant_y_pts": 128,       # Points per slice for integration
+
+    # Section-resultant anchoring (see physics/uniaxial.py).  Errors below are
+    # against the finite-element reference (verification/fem) on the
+    # 24-geometry validation bank -- NOT against each other.  Measuring the
+    # anchors against one another is what produced the withdrawn "5-30% low"
+    # figure for the legacy form: `series` itself runs ~2.5% high, so the two
+    # errors were being added instead of netted.
+    #                                          mean |err|   max |err|
+    #   'series'       — 1D varying-section finite-strain solve  [default]
+    #                                              2.49%       5.07%
+    #   'series_calibrated' — the same, x0.97517 fitted against the reference
+    #                    on the TRAINING bank, so the validation numbers below
+    #                    are held out.  Makes the anchor weakly
+    #                    reference-dependent, so it is opt-in.
+    #                                              0.74%       2.54%
+    #   'uniform'      — finite-strain uniform bar at average stretch.
+    #                    Corrects the linearisation but not the varying
+    #                    section, which is the larger term and the other way,
+    #                    so it is worse than doing nothing.   [ablation]
+    #                                              6.02%      13.46%
+    #   'small_strain' — legacy E*(u/L)*2H                     [ablation]
+    #                                              3.60%      10.96%
+    #   'none'         — rely on reaction self-consistency alone
+    "resultant_anchor": "series",
+    "w_resultant_anchor": 0.5,      # Weight of the absolute anchor term
+    "w_resultant_reaction": 0.5,    # Weight of the grip reaction-consistency term
+                                    # (0.5 keeps the total anchoring magnitude
+                                    #  comparable to the old single 0.5*L_anchor,
+                                    #  so the bias fix is not confounded by a
+                                    #  change in how hard the term pulls)
 
     # Barrier warmup (exponentially ramp down barrier after early locking)
     "barrier_warmup_epochs": 300,

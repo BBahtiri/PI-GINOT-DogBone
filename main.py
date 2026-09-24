@@ -21,6 +21,7 @@ from config import (
 )
 from models.pi_ginot import PI_GINOT
 from physics.losses import PhysicsLoss
+from training.manifest import set_deterministic
 from training.trainer import PI_GINOT_Trainer
 
 
@@ -44,7 +45,7 @@ def inspect_initial_state(model, device="cpu"):
 
     rng = np.random.default_rng(123)
 
-    stress_state = MATERIAL_CONFIG.get("state", "plane strain")
+    stress_state = MATERIAL_CONFIG["state"]
 
     # Use geometry consistent with the training mode
     if TRAINING_CONFIG.get("single_geometry", False):
@@ -65,19 +66,21 @@ def inspect_initial_state(model, device="cpu"):
         coll = sample_collocation_points(mesh, rng=rng)
 
     def _t(arr, req=False):
-        t = torch.tensor(arr, dtype=torch.float32, device=device).unsqueeze(0)
+        t = torch.tensor(arr, dtype=torch.get_default_dtype(), device=device).unsqueeze(0)
         return t.requires_grad_(req) if req else t
 
     interior = _t(coll.interior_pts[:500], req=True)
     bpc = _t(coll.boundary_pc)
-    u_delta = torch.tensor([1.0], dtype=torch.float32, device=device)
-    x_max = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-    y_max = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
+    u_delta = torch.tensor([1.0], dtype=torch.get_default_dtype(), device=device)
+    x_max = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+    y_max = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
 
     mu = MATERIAL_CONFIG["mu"]
     lam = MATERIAL_CONFIG["lam"]
 
     model.eval()
+    if hasattr(model, "set_geometry"):
+        model.set_geometry(mesh.params)
     z = model.encode(bpc, x_max, y_max)
     uv, du_dx, du_dy, dv_dx, dv_dy = model.predict_with_grad_latent(
         interior, z, u_delta, x_max, y_max
@@ -137,11 +140,21 @@ def main():
                         help="Checkpoint directory")
     parser.add_argument("--device", type=str, default=None,
                         help="Device: cpu or cuda")
+    parser.add_argument("--conditioning", type=str, default=None,
+                        choices=["pointcloud", "parameters"],
+                        help="Override the geometry conditioning path")
+    parser.add_argument("--loss_form", type=str, default=None,
+                        choices=["penalty", "energy"],
+                        help="Override the loss formulation")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Override the random seed")
     args, _ = parser.parse_known_args()
 
     # Seed
-    np.random.seed(RANDOM_SEED)
-    torch.manual_seed(RANDOM_SEED)
+    # Seeds every RNG in play, pins cudnn, and asks torch for deterministic
+    # kernels.  Must run before any tensor touches the GPU, because
+    # CUBLAS_WORKSPACE_CONFIG is only read when the CUDA context is created.
+    set_deterministic(args.seed if args.seed is not None else RANDOM_SEED)
 
     # Device
     if args.device:
@@ -157,29 +170,74 @@ def main():
         config["learning_rate"] = args.lr
     if args.batch_size is not None:
         config["batch_size"] = args.batch_size
+    if args.conditioning is not None:
+        config["conditioning"] = args.conditioning
+    if args.loss_form is not None:
+        config["loss_form"] = args.loss_form
 
-    # Model
-    model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG)
+    # Model.  The conditioning path is the project's largest measured lever;
+    # see config.TRAINING_CONFIG["conditioning"].
+    conditioning = config.get("conditioning", "pointcloud")
+    aux = config.get("w_geom_aux", 0.0) > 0.0
+    if conditioning == "parameters":
+        from verification.supervised_ceiling import OracleConditioned
+        model = OracleConditioned(ENCODER_CONFIG, DECODER_CONFIG,
+                                  TRAINING_CONFIG["bank_geo_ranges"])
+        if aux:
+            raise SystemExit(
+                "w_geom_aux supervises the point-cloud encoder's extraction; "
+                "it is meaningless under conditioning='parameters', where the "
+                "parameters are supplied rather than extracted.")
+    elif conditioning == "pointcloud":
+        model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG, aux_head=aux)
+    else:
+        raise SystemExit(f"unknown conditioning {conditioning!r}; expected "
+                         "'pointcloud' or 'parameters'")
+    print(f"  Conditioning: {conditioning}"
+          + (f" (+ geometry aux head, w={config['w_geom_aux']:g})"
+             if aux else ""))
 
     # Stress state
-    stress_state = MATERIAL_CONFIG.get("state", "plane strain")
+    stress_state = MATERIAL_CONFIG["state"]
     print(f"  Stress formulation: {stress_state}")
 
     # Loss
-    loss_fn = PhysicsLoss(
-        mu=MATERIAL_CONFIG["mu"],
-        lam=MATERIAL_CONFIG["lam"],
-        w_equilibrium=config["w_equilibrium"],
-        w_trac_top=config["w_trac_top"],
-        w_trac_arc=config["w_trac_arc"],
-        w_traction_partial=config["w_traction_partial"],
-        w_barrier=config["w_barrier"],
-        j_min=config["barrier_delta"],
-        adaptive_beta=config["adaptive_beta"],
-        L0=NONDIM_SCALES["L0"],
-        S0=NONDIM_SCALES["S0"],
-        stress_state=stress_state,
-    )
+    loss_form = config.get("loss_form", "penalty")
+    if loss_form == "energy":
+        from physics.weak_form import EnergyLoss
+        loss_fn = EnergyLoss(
+            mu=MATERIAL_CONFIG["mu"],
+            lam=MATERIAL_CONFIG["lam"],
+            stress_state=stress_state,
+            quad_degree=config.get("energy_quad_degree", 2),
+            n_elem_target=config.get("energy_n_elem", 1400),
+            resample=config.get("energy_resample", True),
+            n_per_elem=config.get("energy_n_per_elem", 3),
+            w_barrier=config["w_barrier"],
+            j_min=config["barrier_delta"],
+            E_scale=NONDIM_SCALES["S0"],
+            w_trac_top=config.get("energy_w_trac_top", 0.0),
+            w_trac_arc=config.get("energy_w_trac_arc", 0.0),
+            S0=NONDIM_SCALES["S0"],
+        )
+    elif loss_form == "penalty":
+        loss_fn = PhysicsLoss(
+            mu=MATERIAL_CONFIG["mu"],
+            lam=MATERIAL_CONFIG["lam"],
+            w_equilibrium=config["w_equilibrium"],
+            w_trac_top=config["w_trac_top"],
+            w_trac_arc=config["w_trac_arc"],
+            w_traction_partial=config["w_traction_partial"],
+            w_barrier=config["w_barrier"],
+            j_min=config["barrier_delta"],
+            adaptive_beta=config["adaptive_beta"],
+            L0=NONDIM_SCALES["L0"],
+            S0=NONDIM_SCALES["S0"],
+            stress_state=stress_state,
+        )
+    else:
+        raise ValueError(f"Unknown loss_form {loss_form!r}; expected "
+                         "'penalty' or 'energy'.")
 
     # Trainer
     trainer = PI_GINOT_Trainer(

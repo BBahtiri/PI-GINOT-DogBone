@@ -88,7 +88,7 @@ def load_model(ckpt_path, device):
     print(f"Loading checkpoint: {ckpt_path}")
     model = PI_GINOT(ENCODER_CONFIG, DECODER_CONFIG).to(device)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(PI_GINOT.strip_legacy_keys(ckpt["model_state_dict"])[0])
     model.eval()
     epoch = ckpt.get("epoch", "?")
     print(f"  Loaded from epoch {epoch}  |  "
@@ -100,7 +100,7 @@ def evaluate_geometry(model, params, device, rng):
     """Generate mesh, run encode/decode, compute stress/strain, return fields."""
     mu  = MATERIAL_CONFIG["mu"]
     lam = MATERIAL_CONFIG["lam"]
-    state = MATERIAL_CONFIG.get("state", "plane strain")
+    state = MATERIAL_CONFIG["state"]
     u_max = LOADING_CONFIG["u_max"]
     n_bnd = COLLOCATION_CONFIG.get("n_boundary_per_segment", 400)
 

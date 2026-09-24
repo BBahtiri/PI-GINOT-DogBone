@@ -130,7 +130,7 @@ class ResidualDrivenRefinement:
         model.train()
 
         def _t(arr):
-            return torch.tensor(arr, dtype=torch.float32,
+            return torch.tensor(arr, dtype=torch.get_default_dtype(),
                                 device=device).unsqueeze(0)
 
         u_max = LOADING_CONFIG["u_max"]
@@ -150,9 +150,9 @@ class ResidualDrivenRefinement:
             pt_dirs = torch.tensor(coll.partial_traction_dirs,
                                    dtype=torch.long, device=device)
             bpc = _t(coll.boundary_pc)
-            u_d = torch.tensor([u_max], dtype=torch.float32, device=device)
-            x_m = torch.tensor([coll.x_max], dtype=torch.float32, device=device)
-            y_m = torch.tensor([coll.y_max], dtype=torch.float32, device=device)
+            u_d = torch.tensor([u_max], dtype=torch.get_default_dtype(), device=device)
+            x_m = torch.tensor([coll.x_max], dtype=torch.get_default_dtype(), device=device)
+            y_m = torch.tensor([coll.y_max], dtype=torch.get_default_dtype(), device=device)
             tf_tags = torch.tensor(coll.traction_free_tags,
                                    dtype=torch.long, device=device)
 

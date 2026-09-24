@@ -291,7 +291,7 @@ def collocation_to_torch(coll: CollocationData, device: str = "cpu") -> dict:
     import torch
 
     def _to_tensor(arr):
-        return torch.tensor(arr, dtype=torch.float32, device=device)
+        return torch.tensor(arr, dtype=torch.get_default_dtype(), device=device)
 
     def _to_int_tensor(arr):
         return torch.tensor(arr, dtype=torch.long, device=device)

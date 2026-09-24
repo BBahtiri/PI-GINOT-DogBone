@@ -1,0 +1,20 @@
+Phase 8.1 -- Level-0 verification of the distance-function layer (float64)
+====================================================================================
+case           Z: max|phi|  N: max|dn-1|  P: min phi  G: lift err  E: ansatz err  verdict
+dogbone            3.6e-15       7.4e-11    8.73e-05      2.2e-16        2.2e-16  PASS
+open_hole          7.1e-15       5.0e-11    5.03e-04      2.2e-16        1.1e-16  PASS
+dent               7.1e-15       5.0e-11    1.34e-04      2.2e-16        1.1e-16  PASS
+inclusion          7.1e-15       6.5e-09    2.42e-04      2.2e-16        1.1e-16  PASS
+sent               7.1e-15       5.0e-11    1.73e-04      2.2e-16        1.4e-16  PASS
+grip_region        1.8e-15       2.0e-10    3.57e-04      1.1e-16        1.1e-16  PASS
+
+R  dog-bone layer vs PhysicsDecoder._apply_hard_bc: max rel diff 9.3e-17  PASS
+
+C  inclusion arc, d phi_u/dn relative to its value at 45 deg, at arc distance s from the corner (0, r):
+                      s = 0.1 r  s = 0.01 r  s = 0.001 r
+   R-equivalence         1.0000      1.0000      1.0000
+   plain product         0.1504      0.0152      0.0015
+
+Regression checks for the three fixed defects: F32 PASS, SEG PASS, TFI PASS
+
+All Level-0 checks: PASS

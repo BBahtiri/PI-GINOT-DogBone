@@ -110,8 +110,30 @@ class PhysicsDecoder(nn.Module):
         # Configurable PE frequency cap (default 6 → max freq 2^5 = 32)
         pe_max_deg = config.get("pe_max_deg", 6)
 
-        # Output correction scale (keeps initial corrections small)
-        self.output_scale = config.get("output_scale", 1e-3)
+        # Output correction scale, per component.  A scalar applies to both
+        # heads; a pair scales (phi_u, phi_v) separately.
+        #
+        # What the two heads are asked for is not what the two *fields* look
+        # like, and that difference is the whole reason a per-component scale
+        # is worth anything here.  Measured on the finite-element reference
+        # over the eight held-out geometries: ||v||/||u|| is 0.042-0.062, a
+        # 16-24x imbalance -- but the ansatz divides v by eta = y/H_grip,
+        # which spans [0, 1], so the *head* only has to produce rms phi_v
+        # 0.084 against rms phi_u 0.290.  The residual imbalance is 3.46x,
+        # not 20x; the hard-BC layer had already absorbed the rest.  Setting
+        # the scale from the fields rather than from the heads would have
+        # over-corrected by a factor of six.
+        #
+        # Registered non-persistent so it stays a configuration choice and
+        # every checkpoint written before it existed still loads.
+        _sc = torch.as_tensor(config.get("output_scale", 1e-3),
+                              dtype=torch.get_default_dtype()).reshape(-1)
+        if _sc.numel() == 1:
+            _sc = _sc.repeat(out_ch)
+        elif _sc.numel() != out_ch:
+            raise ValueError(f"output_scale must be a scalar or {out_ch} "
+                             f"values, got {_sc.numel()}")
+        self.register_buffer("output_scale", _sc, persistent=False)
 
         # Query-point encoder: NeRF PE + projection → embed_dim
         self.q_posenc = PosEmbLinear("nerf", in_ch, embed_dim, max_deg=pe_max_deg)
@@ -138,6 +160,21 @@ class PhysicsDecoder(nn.Module):
         self.output_proj = nn.Linear(embed_dim, out_ch)
         nn.init.normal_(self.output_proj.weight, std=1e-5)
         nn.init.zeros_(self.output_proj.bias)
+
+        # Mixed u-P: two stress-potential channels and a per-geometry axial
+        # force correction, sharing the trunk with the displacement head so a
+        # single forward pass yields both fields.  Built only when asked, so
+        # every checkpoint written before this existed still loads and the
+        # displacement-only path is unchanged.  See physics/mixed.py.
+        self.mixed = bool(config.get("mixed", False))
+        if self.mixed:
+            self.stress_proj = nn.Linear(embed_dim, 2)
+            nn.init.normal_(self.stress_proj.weight, std=1e-5)
+            nn.init.zeros_(self.stress_proj.bias)
+            self.force_head = nn.Sequential(
+                nn.Linear(embed_dim, 64), nn.GELU(), nn.Linear(64, 1))
+            nn.init.zeros_(self.force_head[-1].weight)
+            nn.init.zeros_(self.force_head[-1].bias)
 
         # Direct pooled-latent bias injection
         # Adds a geometry-conditioned shift to queries before cross-attention,
@@ -174,6 +211,25 @@ class PhysicsDecoder(nn.Module):
         """
         if y_max is None:
             y_max = x_max
+        q, _ = self.features(query_pts, geometry_latent, x_max, y_max)
+
+        # Raw network output (scaled to keep initial corrections small)
+        raw = self.output_scale * self.output_proj(q)  # [B, N_q, 2]
+
+        # Hard Dirichlet BC enforcement (physical coords)
+        uv = self._apply_hard_bc(raw, query_pts, u_delta, x_max, y_max)
+
+        return uv
+
+    def features(self, query_pts, geometry_latent, x_max, y_max):
+        """The shared trunk: per-query features and the pooled latent.
+
+        Split out of ``forward`` so the mixed formulation can read both the
+        displacement head and the stress-potential head off one pass.  The
+        displacement path through ``forward`` is unchanged.
+        """
+        if y_max is None:
+            y_max = x_max
 
         # Normalise physical coords to [-1, 1] for PE + attention
         query_norm = self._normalise_coords(query_pts, x_max, y_max)
@@ -193,13 +249,7 @@ class PhysicsDecoder(nn.Module):
             q = block(q, geometry_latent)             # [B, N_q, embed_dim]
             q = film(q, z_pool)                       # [B, N_q, embed_dim]
 
-        # Raw network output (scaled to keep initial corrections small)
-        raw = self.output_scale * self.output_proj(q)  # [B, N_q, 2]
-
-        # Hard Dirichlet BC enforcement (physical coords)
-        uv = self._apply_hard_bc(raw, query_pts, u_delta, x_max, y_max)
-
-        return uv
+        return q, z_pool
 
     def _normalise_coords(
         self,

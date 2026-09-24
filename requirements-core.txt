@@ -1,0 +1,25 @@
+# PI-GINOT — core scientific stack.
+#
+# This is everything needed to reproduce the physics: train the operator, run
+# the verification and evaluation code, and execute the test suite.  Nothing
+# here pulls in the Streamlit/LangGraph agent application; that lives in
+# requirements.txt and requirements-external.txt and is not needed to
+# reproduce any number in the paper.
+#
+#   pip install -r requirements-core.txt
+#   pytest
+#
+# Versions are pinned to what the reported runs used; run_manifest.json in
+# each checkpoint directory records the versions actually present.
+
+torch==2.4.1
+numpy==1.26.4
+scipy==1.13.1
+matplotlib==3.9.2
+
+# Media output for showcase_gif_v2.py (optional for training)
+pillow==10.4.0
+imageio==2.35.1
+
+# Test suite
+pytest==8.3.3

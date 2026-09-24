@@ -1,6 +1,8 @@
 # PI-GINOT Agentic Studio — External Deployment Dependencies
 # Does NOT include databricks-langchain (Databricks-only; guarded by try/except)
 # Install with: pip install -r requirements-external.txt
+#
+# Agent application only.  For the physics stack see requirements-core.txt.
 
 # ── Streamlit UI ──
 streamlit>=1.38.0
